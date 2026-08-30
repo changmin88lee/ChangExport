@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>ChangExport</Name>
+    <Assembly>ChangExport.dll</Assembly>
+    <AddInId>AED168FA-7C43-497A-8F2D-F87905A2B2B3</AddInId>
+    <FullClassName>ChangExport.App.App</FullClassName>
+    <VendorId>LAON</VendorId>
+    <VendorDescription>창Export - 한국형 Revit DWG Export 도구</VendorDescription>
+  </AddIn>
+</RevitAddIns>
