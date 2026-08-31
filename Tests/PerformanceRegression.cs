@@ -58,7 +58,7 @@ internal static class PerformanceRegression
             Compare(bySource[source], entry.GetProperty("result").GetProperty("OutputPath").GetString()!, check);
         }
     }
-    private static void Compare(string before, string after, Action<bool, string> check)
+    internal static void Compare(string before, string after, Action<bool, string> check, bool ignoreColors = false)
     {
         var left = DwgReader.Read(before); var right = DwgReader.Read(after);
         check(left.Entities.Count == right.Entities.Count, $"Entity count preserved: {Path.GetFileName(after)}");
@@ -67,13 +67,13 @@ internal static class PerformanceRegression
         var first = left.ModelSpace.GetSortedEntities().ToArray(); var second = right.ModelSpace.GetSortedEntities().ToArray();
         for (int i = 0; i < first.Length; i++)
         {
-            string a = JsonSerializer.Serialize(Capture(first[i], 0)), b = JsonSerializer.Serialize(Capture(second[i], 0));
+            string a = JsonSerializer.Serialize(Capture(first[i], 0, ignoreColors)), b = JsonSerializer.Serialize(Capture(second[i], 0, ignoreColors));
             check(a == b, $"Geometry/display/order changed at entity {i} ({first[i].ObjectName}) in {Path.GetFileName(after)}\n{a}\n{b}");
         }
     }
 
     // Compare graphical content, not handles, generated block names or DWG timestamps.
-    private static object? Capture(object? value, int depth)
+    private static object? Capture(object? value, int depth, bool ignoreColors = false)
     {
         if (value == null) return null;
         if (depth > 12) throw new InvalidOperationException("Unexpected deep output graph");
@@ -83,21 +83,22 @@ internal static class PerformanceRegression
         if (type.IsPrimitive || type.IsEnum || value is string || value is decimal) return value.ToString();
         if (value is XYZ xyz) return new[] { Math.Round(xyz.X, 6), Math.Round(xyz.Y, 6), Math.Round(xyz.Z, 6) };
         if (value is XY xy) return new[] { Math.Round(xy.X, 6), Math.Round(xy.Y, 6) };
-        if (value is IEnumerable sequence) return sequence.Cast<object?>().Select(v => Capture(v, depth + 1)).ToArray();
+        if (value is IEnumerable sequence) return sequence.Cast<object?>().Select(v => Capture(v, depth + 1, ignoreColors)).ToArray();
         var result = new SortedDictionary<string, object?> { ["type"] = type.Name };
         var skip = new HashSet<string> { "Handle", "Owner", "Document", "Name", "Reactors", "XDictionary", "XData", "Block", "Style", "Material", "Layer", "LineType",
             "BoundingBox", "ObjectType", "HasDynamicSubclass", "HasXData", "HasAttributes", "CadObject", "Entities", "ShapeStyle", "PlotStyleName" };
         foreach (var p in type.GetProperties(BindingFlags.Instance | BindingFlags.Public).Where(p => p.CanRead && p.GetIndexParameters().Length == 0 && !skip.Contains(p.Name)))
         {
             var t = p.PropertyType;
+            if (ignoreColors && t == typeof(ACadSharp.Color)) continue;
             if (!(t.IsPrimitive || t.IsEnum || t == typeof(string) || t.IsValueType || typeof(IEnumerable).IsAssignableFrom(t))) continue;
-            result[p.Name] = Capture(p.GetValue(value), depth + 1);
+            result[p.Name] = Capture(p.GetValue(value), depth + 1, ignoreColors);
         }
         if (value is Entity e) { result["Layer"] = e.Layer.Name; result["LineType"] = e.LineType.Name; }
         if (value is TextEntity text) { result["Font"] = text.Style.Filename; result["BigFont"] = text.Style.BigFontFilename; }
         if (value is MText multiline) { result["Font"] = multiline.Style.Filename; result["BigFont"] = multiline.Style.BigFontFilename; }
-        if (value is Dimension dimension) { result["Style"] = Capture(dimension.Style, depth + 1); result["Display"] = Capture(dimension.Block?.GetSortedEntities(), depth + 1); }
-        if (value is Insert insert) { result["Children"] = Capture(insert.Block.GetSortedEntities(), depth + 1); result["Clip"] = Capture(insert.SpatialFilter, depth + 1); }
+        if (value is Dimension dimension) { result["Style"] = Capture(dimension.Style, depth + 1, ignoreColors); result["Display"] = Capture(dimension.Block?.GetSortedEntities(), depth + 1, ignoreColors); }
+        if (value is Insert insert) { result["Children"] = Capture(insert.Block.GetSortedEntities(), depth + 1, ignoreColors); result["Clip"] = Capture(insert.SpatialFilter, depth + 1, ignoreColors); }
         return result;
     }
 }

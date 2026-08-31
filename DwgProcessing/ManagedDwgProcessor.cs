@@ -33,6 +33,7 @@ public sealed partial class ManagedDwgProcessor
         }
         else document = Merge(request, response, Check);
         if (request.RevitSheet) document = EditableModel(document, response, Check);
+        if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
         return SavePrepared(document, response, request.OutputPath, workingDirectory, Check);
     }
 
@@ -57,9 +58,11 @@ public sealed partial class ManagedDwgProcessor
         RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
         document = ApplyCustomRemaps(document, request, response);
         ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
-            .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
+            .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         response.TimingsMs["flattenAndLayers"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         if (request.RevitSheet) document = EditableModel(document, response, Check);
+        // Marker colors must be consumed by ApplyCustomRemaps before removing overrides.
+        if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
         response.TimingsMs["editableObjects"] = phase.Elapsed.TotalMilliseconds;
         Check();
         response.ModelEntityCount = document.Entities.Count;
@@ -452,6 +455,11 @@ public sealed partial class ManagedDwgProcessor
         foreach (LayerAppearance edit in styles)
         {
             if (!target!.Layers.TryGetValue(edit.Layer, out Layer layer)) continue;
+            if (edit.Color.HasValue)
+            {
+                if (edit.Color.Value is < 1 or > 255) throw new InvalidDataException("잘못된 레이어 색상입니다.");
+                layer.Color = new ACadSharp.Color((short)edit.Color.Value);
+            }
             if (!string.IsNullOrWhiteSpace(edit.Linetype))
             {
                 if (!target.LineTypes.TryGetValue(edit.Linetype, out LineType type)) throw new InvalidOperationException("Linetype missing: " + edit.Linetype);

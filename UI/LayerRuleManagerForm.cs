@@ -12,6 +12,9 @@ public sealed class LayerRuleManagerForm : Form
     private readonly RevitExportConfiguration _configuration;
     private readonly Func<string, List<RevitLayerRow>> _read;
     private readonly Dictionary<string, List<RevitLayerRow>> _drafts = new();
+    private readonly HashSet<(string Setup, string Search, string Category)> _expanded = new();
+    private readonly Dictionary<string, RevitLayerRow> _parents = new();
+    private readonly HashSet<string> _expandable = new();
     private readonly ComboBox _setup;
     private readonly TextBox _search;
     private readonly DataGridView _grid;
@@ -49,6 +52,8 @@ public sealed class LayerRuleManagerForm : Form
         var up = UiTheme.SecondaryButton("필터 ↑"); up.Click += (_, _) => MoveRule(-1); toolbar.Controls.Add(up);
         var down = UiTheme.SecondaryButton("필터 ↓"); down.Click += (_, _) => MoveRule(1); toolbar.Controls.Add(down);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
+        _grid.Columns.Add(new DataGridViewButtonColumn { Name = "Expand", HeaderText = "", Width = 30, MinimumWidth = 30,
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.None, ReadOnly = true, FlatStyle = FlatStyle.Flat, SortMode = DataGridViewColumnSortMode.NotSortable });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(RevitLayerRow.Caption), HeaderText = "카테고리 / 하위 항목", ReadOnly = true, FillWeight = 160 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Contains", DataPropertyName = nameof(RevitLayerRow.TypeNameContains), HeaderText = "유형 이름에 포함된 문자", FillWeight = 120 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(RevitLayerRow.Layer), HeaderText = "투영 레이어", FillWeight = 105 });
@@ -60,6 +65,20 @@ public sealed class LayerRuleManagerForm : Form
             DataSource = new[] { new WeightItem(-1, "원본 유지") }.Concat(RevitLayerMappingService.ValidLineweights.Select(w => new WeightItem(w, (w / 100d).ToString("0.00")))).ToList(),
             DisplayMember = nameof(WeightItem.Label), ValueMember = nameof(WeightItem.Value), ValueType = typeof(int), FlatStyle = FlatStyle.Flat });
         _grid.CellPainting += PaintColor; _grid.CellClick += PickColor;
+        _grid.CellContentClick += ToggleCategory;
+        _grid.CellFormatting += (_, e) =>
+        {
+            if (e.RowIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Expand") return;
+            var row = (RevitLayerRow)_grid.Rows[e.RowIndex].DataBoundItem;
+            e.Value = IsExpandableParent(row) ? (_expanded.Contains((SetupName, _search.Text.Trim(), row.Category)) ? "−" : "+") : "";
+            e.FormattingApplied = true;
+        };
+        _grid.CellPainting += (_, e) =>
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Expand") return;
+            if (IsExpandableParent((RevitLayerRow)_grid.Rows[e.RowIndex].DataBoundItem)) return;
+            e.PaintBackground(e.ClipBounds, true); e.Paint(e.ClipBounds, DataGridViewPaintParts.Border); e.Handled = true;
+        };
         _grid.CellBeginEdit += (_, e) => { if (_grid.Columns[e.ColumnIndex].Name == "Contains" && !((RevitLayerRow)_grid.Rows[e.RowIndex].DataBoundItem).IsCustom) e.Cancel = true; };
         root.Controls.Add(_grid);
         _status = UiTheme.Muted("색상 칸을 클릭하여 선택합니다. 선종류를 비우면 원본 표현을 유지합니다.");
@@ -80,13 +99,35 @@ public sealed class LayerRuleManagerForm : Form
         {
             if (!_drafts.TryGetValue(SetupName, out var rows)) _drafts[SetupName] = rows = _read(SetupName);
             string term = _search.Text.Trim();
-            var matched = rows.Where(r => term.Length == 0 || $"{r.Category} {r.Subcategory} {r.Layer} {r.CutLayer} {r.TypeNameContains}".Contains(term, StringComparison.CurrentCultureIgnoreCase))
-                .Select(r => r.Category).ToHashSet();
-            var filtered = rows.Where(r => matched.Contains(r.Category)).ToList();
+            var matched = rows.Where(r => term.Length == 0 || $"{r.Category} {r.Subcategory} {r.Layer} {r.CutLayer} {r.TypeNameContains}".Contains(term, StringComparison.CurrentCultureIgnoreCase)).ToHashSet();
+            var filtered = new List<RevitLayerRow>(); _parents.Clear(); _expandable.Clear();
+            foreach (var group in rows.GroupBy(r => r.Category))
+            {
+                var parent = group.FirstOrDefault(r => !r.IsCustom && r.Subcategory.Length == 0) ?? group.First();
+                var children = group.Where(r => !ReferenceEquals(r, parent) && matched.Contains(r)).ToList();
+                if (!matched.Contains(parent) && children.Count == 0) continue;
+                _parents[group.Key] = parent; filtered.Add(parent);
+                if (children.Count == 0) continue;
+                _expandable.Add(group.Key);
+                if (_expanded.Contains((SetupName, term, group.Key))) filtered.AddRange(children);
+            }
             _grid.DataSource = new BindingList<RevitLayerRow>(filtered);
-            _status.Text = $"카테고리·하위 항목 {rows.Count(r => !r.IsCustom):N0}개 · 필터 {rows.Count(r => r.IsCustom):N0}개 · 대소문자 구분 없이 포함 · 색상 칸을 클릭하여 선택";
+            _status.Text = $"전체 항목 {rows.Count:N0}개 · 필터 {rows.Count(r => r.IsCustom):N0}개 · "
+                + (term.Length > 0 ? $"검색 일치 {matched.Count:N0}개 · " : "")
+                + $"현재 표시 {filtered.Count:N0}행 · +로 하위 항목 펼치기 · 색상 칸을 클릭하여 선택";
         }
         catch (Exception ex) { _grid.DataSource = null; _status.Text = "설정 읽기 실패: " + ex.Message; }
+    }
+    private bool IsExpandableParent(RevitLayerRow row) => _expandable.Contains(row.Category)
+        && _parents.TryGetValue(row.Category, out var parent) && ReferenceEquals(row, parent);
+    private void ToggleCategory(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Expand" || !_grid.EndEdit()) return;
+        var row = (RevitLayerRow)_grid.Rows[e.RowIndex].DataBoundItem;
+        if (!IsExpandableParent(row)) return;
+        var key = (SetupName, _search.Text.Trim(), row.Category);
+        if (!_expanded.Add(key)) _expanded.Remove(key);
+        LoadRows(); SelectRule(row);
     }
     private RevitLayerRow? Selected => _grid.CurrentRow?.DataBoundItem as RevitLayerRow;
     private void AddRule()
@@ -99,7 +140,10 @@ public sealed class LayerRuleManagerForm : Form
         rule.CutColor = rule.CutColor is >= 1 and <= 255 ? rule.CutColor : rule.Color;
         if (string.IsNullOrWhiteSpace(rule.CutLayer)) rule.CutLayer = rule.Layer;
         int index = rows.FindLastIndex(r => r.Category == parent.Category && (r.IsCustom || r.Subcategory.Length == 0));
-        rows.Insert(index + 1, rule); LoadRows(); SelectRule(rule);
+        rows.Insert(index + 1, rule); _expanded.Add((SetupName, "", parent.Category));
+        // A newly created empty rule must remain visible for editing, even during search.
+        if (_search.Text.Length > 0) _search.Clear(); else LoadRows();
+        SelectRule(rule);
         _grid.CurrentCell = _grid.CurrentRow!.Cells["Contains"]; _grid.BeginEdit(true);
     }
     private void RemoveRule()

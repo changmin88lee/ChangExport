@@ -58,7 +58,7 @@ public sealed class RevitDwgExportService
                         item.TimingsMs[$"{sheet.SheetNumber}:native"] = nativeClock.Elapsed.TotalMilliseconds;
                         if (!success || !File.Exists(Path.Combine(nativeDirectory, "sheet.dwg"))) throw new IOException("Revit이 시트 DWG를 생성하지 못했습니다.");
                         CheckCancel(cancel);
-                        var request = new BridgeRequest { Operation = "Flatten", RevitSheet = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) };
+                        var request = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) };
                         string input = Path.Combine(nativeDirectory, "sheet.dwg");
                         if (layers.Any(r => r.IsCustom))
                         {
@@ -95,7 +95,7 @@ public sealed class RevitDwgExportService
                     {
                         var conversion = entry.Drawing.Response;
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
-                            conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained });
+                            conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors });
                         item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {entry.Sheet}: {w}"));
                         foreach (var timing in conversion.TimingsMs) item.TimingsMs[$"{entry.Sheet}:{timing.Key}"] = timing.Value;
                     }
@@ -104,7 +104,7 @@ public sealed class RevitDwgExportService
                     stage = "세트 모형공간 배치";
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
                     var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
-                        Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) },
+                        Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, UseLayerColors = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) },
                         prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
                     foreach (var timing in merged.TimingsMs) item.TimingsMs[timing.Key] = timing.Value;
                     CheckCancel(cancel);
@@ -126,6 +126,7 @@ public sealed class RevitDwgExportService
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
                 addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Model millimeters; sheet scaled by largest 2D viewport denominator",
                 outputSetupSource = "ChangExport", categoryRowCount = layers.Count(r => !r.IsCustom), intermediateDwgWritten = false,
+                entityColorPolicy = "ByLayer after custom filter remapping", layerColors = RevitLayerMappingService.GetAppearances(layers),
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false,
                 customFiltersRequested = layers.Count(r => r.IsCustom), customFilterMethod = "Independent temporary sheet/view copies, type-name contains, color marker remap, transaction-group rollback",
                 requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items

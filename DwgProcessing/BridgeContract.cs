@@ -13,6 +13,7 @@ namespace ChangExport.DwgProcessing
         public List<LayerAppearance> LayerStyles { get; set; } = new List<LayerAppearance>();
         // Revit sheet DWG coordinates are millimeters. Plotter paper metadata is not a coordinate unit.
         public bool RevitSheet { get; set; }
+        public bool UseLayerColors { get; set; }
         public List<ColorLayerRemap> ColorRemaps { get; set; } = new();
         public Dictionary<string, string> TextReplacements { get; set; } = new();
         public Dictionary<string, int> ExpectedRuleMatches { get; set; } = new();
@@ -29,6 +30,7 @@ namespace ChangExport.DwgProcessing
     public sealed class LayerAppearance
     {
         public string Layer { get; set; } = "";
+        public int? Color { get; set; }
         public string Linetype { get; set; } = "";
         public int? Lineweight { get; set; }
     }
@@ -50,6 +52,7 @@ namespace ChangExport.DwgProcessing
         public int BoundaryBlocksRetained { get; set; }
         public Dictionary<string, int> CustomRuleEntityCounts { get; set; } = new();
         public Dictionary<string, double> TimingsMs { get; set; } = new();
+        public int NormalizedEntityColors { get; set; }
     }
 
     public sealed class SheetPlacement

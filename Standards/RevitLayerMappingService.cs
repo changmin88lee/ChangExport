@@ -101,15 +101,14 @@ public sealed class RevitLayerMappingService
         if (all.Where(r => r.IsCustom).GroupBy(r => r.RuleId).Any(g => g.Count() > 1)) issues.Add("중복된 필터 식별자가 있습니다.");
         foreach (var group in all.SelectMany(r => new[] { (r.Layer, r.Color, r.IsCustom), (r.CutLayer, r.CutColor, r.IsCustom) })
             .Where(v => !string.IsNullOrWhiteSpace(v.Item1) && v.Item2 is >= 1 and <= 255).GroupBy(v => v.Item1, StringComparer.OrdinalIgnoreCase))
-            if (group.Any(v => v.IsCustom) && group.Select(v => v.Item2).Distinct().Count() > 1)
-                issues.Add($"{group.Key}: 기본 항목/필터가 같은 레이어에 다른 색상을 지정합니다. 다른 레이어 이름을 사용하세요.");
+            if (group.Select(v => v.Item2).Distinct().Count() > 1)
+                issues.Add($"{group.Key}: 같은 레이어에 다른 색상을 지정했습니다. 색상을 통일하거나 다른 레이어 이름을 사용하세요.");
         return issues.Distinct().ToList();
     }
 
     public static List<LayerAppearance> GetAppearances(IEnumerable<RevitLayerRow> rows) => rows
-        .Where(r => r.Linetype.Length > 0 || r.Lineweight.HasValue)
-        .SelectMany(r => new[] { r.Layer, r.CutLayer }.Where(l => l.Length > 0)
-            .Select(l => new LayerAppearance { Layer = l, Linetype = r.Linetype, Lineweight = r.Lineweight }))
+        .SelectMany(r => new[] { (Layer: r.Layer, Color: r.Color), (Layer: r.CutLayer, Color: r.CutColor) }.Where(l => l.Layer.Length > 0)
+            .Select(l => new LayerAppearance { Layer = l.Layer, Color = l.Color, Linetype = r.Linetype, Lineweight = r.Lineweight }))
         .GroupBy(r => r.Layer, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
 
     public static readonly int[] ValidLineweights = { 0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211 };

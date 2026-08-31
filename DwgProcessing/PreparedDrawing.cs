@@ -41,6 +41,7 @@ public sealed partial class ManagedDwgProcessor
             response.Placements.Add(new SheetPlacement { Source = drawings[0].Source, X = 0, Y = y, Width = box.Width, Height = box.Height });
         }
         else document = EditableModel(Merge(request, response, check, drawings), response, check);
+        if (request.UseLayerColors) NormalizeLayerColors(document, response, check);
         response.TimingsMs["merge"] = clock.Elapsed.TotalMilliseconds;
         return SavePrepared(document, response, request.OutputPath, workingDirectory, check);
     }
