@@ -36,11 +36,16 @@ Copy-Item -LiteralPath (Join-Path $root "Uninstall-Revit2026.ps1") -Destination 
 Copy-Item -LiteralPath (Join-Path $root "VERSION") -Destination (Join-Path $latest "VERSION") -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination (Join-Path $latest "README.md") -Force
 Copy-Item -LiteralPath (Join-Path $root "Data\Company_Default.json") -Destination (Join-Path $latest "Data\Company_Default.json") -Force
+New-Item -ItemType Directory -Path (Join-Path $latest "ThirdParty") -Force | Out-Null
+foreach ($notice in @("ACadSharp-LICENSE.txt", "CSUtilities-LICENSE.txt")) {
+    Copy-Item -LiteralPath (Join-Path $root "ThirdParty\$notice") -Destination (Join-Path $latest "ThirdParty\$notice") -Force
+}
 
 $buildInfo = @"
 ChangExport latest Release build
 Created: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 Target: Autodesk Revit 2026 / Windows x64 / .NET 8
+DWG engine: Embedded ACadSharp 3.7.1 (MIT). No external CAD installation or process.
 Version: $((Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw -Encoding UTF8).Trim())
 "@
 Set-Content -LiteralPath (Join-Path $latest $buildInfoFileName) -Value $buildInfo -Encoding UTF8

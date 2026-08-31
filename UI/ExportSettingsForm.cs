@@ -40,7 +40,7 @@ public sealed class ExportSettingsForm : Form
         Controls.Add(root);
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         title.Controls.Add(UiTheme.Heading("세트별 DWG · 모형공간 출력"));
-        title.Controls.Add(UiTheme.Muted("AutoCAD 2023 연동 · 도곽/뷰/주석의 시트 배치를 모형공간으로 옮겨 세트별로 묶습니다.")); root.Controls.Add(title);
+        title.Controls.Add(UiTheme.Muted("Revit 독립 실행 · 내장 DWG 엔진으로 시트의 도곽/뷰/주석을 모형공간에 배치합니다.")); root.Controls.Add(title);
         var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 2, Margin = new Padding(0, 14, 0, 8) };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         settings.Controls.Add(new Label { Text = "Revit 출력 설정", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
@@ -52,7 +52,7 @@ public sealed class ExportSettingsForm : Form
         settings.Controls.Add(new Label { Text = "출력 폴더", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         _folder = new TextBox { Dock = DockStyle.Fill, Text = defaultFolder }; settings.Controls.Add(_folder, 1, 1);
         var browse = UiTheme.SecondaryButton("찾아보기"); browse.Click += (_, _) => { using var picker = new FolderBrowserDialog { SelectedPath = OutputFolder }; if (picker.ShowDialog(this) == DialogResult.OK) _folder.Text = picker.SelectedPath; }; settings.Controls.Add(browse, 2, 1); root.Controls.Add(settings);
-        var notice = UiTheme.Muted("출력 기준: 시트 지면 크기(mm), 시트의 상대 축척 유지. 각 뷰의 실물 1:1 변환은 하지 않습니다.\n변환 과정에서 잘린 치수·블록·해치 등의 표현이 달라질 수 있으므로 결과를 확인하세요. 실패한 세트는 최종 DWG로 저장하지 않습니다.");
+        var notice = UiTheme.Muted("출력 기준: 시트 지면 크기(mm), 시트의 상대 축척 유지. 각 뷰의 실물 1:1 변환은 하지 않습니다.\nDWG 2010 이상 · 2D 뷰포트 대상입니다. 원근·음영·지원하지 않는 객체가 있으면 해당 세트는 저장하지 않습니다.");
         notice.MaximumSize = new Size(980, 0); notice.Margin = new Padding(0, 0, 0, 12); root.Controls.Add(notice);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(ExportSetChoice.Selected), HeaderText = "출력", FillWeight = 40 });

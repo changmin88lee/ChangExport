@@ -19,9 +19,9 @@ public sealed class HelpCommand : IExternalCommand
                 "4. 회사 DWG 출력에서 세트와 폴더 선택\n" +
                 "5. 최종 DWG 모형공간과 Manifest 확인",
             ExpandedContent =
-                "AutoCAD 2023과 유효한 실행 환경이 필요합니다. Revit 기본 DWG 매핑을 바탕으로 시트당 변환 후 세트별 하나의 모형공간 DWG를 만듭니다. " +
+                "Revit 2026만 필요하며 외부 CAD 프로그램을 설치하거나 실행하지 않습니다. DWG 처리 모듈은 애드인 DLL에 포함됩니다. Revit 기본 DWG 매핑을 바탕으로 시트당 변환 후 세트별 하나의 모형공간 DWG를 만듭니다. " +
                 "시트 지면 mm와 시트의 상대 축척을 유지하며 각 뷰를 실물 1:1로 바꾸지는 않습니다. " +
-                "잘린 치수·해치·블록 등은 변환 결과를 확인하세요. 커스텀 필터는 다음 단계이며 기존 CAD_LAYER와 Rule은 이번 출력에 적용하지 않습니다. " +
+                "DWG 2010 이상과 2D 뷰포트를 지원하며 원근·음영·지원하지 않는 객체는 실패 사유를 표시합니다. 구버전 DWG는 한글 보존을 보장할 수 없어 저장하지 않습니다. 글자·치수·해치·잘림은 실제 출력 결과를 비교하세요. 커스텀 필터는 다음 단계이며 기존 CAD_LAYER와 Rule은 이번 출력에 적용하지 않습니다. " +
                 "출력 설정은 프로젝트별 외부 파일에 저장되며 원본 RVT·Revit Setup·기존 Profile은 변경하지 않습니다.",
             CommonButtons = TaskDialogCommonButtons.Close
         };

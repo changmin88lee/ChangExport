@@ -12,14 +12,15 @@ public sealed class RevitDwgExportService
     public ExportRunResult Export(Document document, IReadOnlyList<SheetSetDefinition> sets, string outputFolder,
         string setupName, IReadOnlyList<RevitLayerRow> layers, Action<string> progress, Func<bool> cancel, Action pump)
     {
-        var processor = new AutoCadProcessor();
-        if (!processor.IsAvailable) throw new InvalidOperationException("모형공간 출력에는 AutoCAD 2023이 필요합니다.");
+        var processor = new ManagedDwgProcessor();
+
         Directory.CreateDirectory(outputFolder);
         string jobId = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N")[..8];
         string staging = Path.Combine(outputFolder, "_ChangExport_Work", jobId);
         Directory.CreateDirectory(staging);
         var result = new ExportRunResult { OutputFolder = outputFolder, WorkFolder = staging };
         using DWGExportOptions options = new RevitLayerMappingService(document).Apply(setupName, layers);
+        options.MergedViews = false; // Disable sheet-view/link Xrefs in staging; the saved Revit setup remains unchanged.
         try
         {
             for (int setIndex = 0; setIndex < sets.Count; setIndex++)
@@ -45,7 +46,7 @@ public sealed class RevitDwgExportService
                         if (!success || !File.Exists(Path.Combine(nativeDirectory, "sheet.dwg"))) throw new IOException("Revit이 시트 DWG를 생성하지 못했습니다.");
                         CheckCancel(cancel);
                         string flat = Path.Combine(setFolder, $"flat_{sheetIndex + 1:000}.dwg");
-                        progress($"{set.Name} · {sheet.SheetNumber}\nAutoCAD 2023 모형공간 변환 및 재열기 검사 중");
+                        progress($"{set.Name} · {sheet.SheetNumber}\n내장 엔진 모형공간 변환 및 재열기 검사 중");
                         BridgeResponse conversion = processor.Run(new BridgeRequest { Operation = "Flatten", OutputPath = flat },
                             Path.Combine(nativeDirectory, "sheet.dwg"), setFolder, cancel, pump);
                         item.Warnings.AddRange(conversion.Warnings); flattened.Add(flat);
@@ -59,6 +60,7 @@ public sealed class RevitDwgExportService
                     CheckCancel(cancel);
                     string destination = PublishUnique(finalStage, outputFolder, set.Name);
                     item.Success = true; item.Message = destination; item.Placements = merged.Placements;
+                    item.Warnings.AddRange(merged.Warnings);
                     item.ModelEntityCount = merged.ModelEntityCount; item.PaperEntityCount = merged.PaperEntityCount;
                 }
                 catch (OperationCanceledException) { item.Message = "사용자 취소 · 이 세트의 최종 파일은 생성하지 않았습니다."; result.Cancelled = true; break; }
@@ -72,7 +74,7 @@ public sealed class RevitDwgExportService
             {
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
                 addinVersion = ProductInfo.Version, exportSetup = setupName, outputSpace = "ModelSpace", units = "Sheet paper millimeters",
-                postProcessor = "AutoCAD 2023 ExportLayout", originalSetupModified = false, customFiltersApplied = false,
+                postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false, customFiltersApplied = false,
                 requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
             }, new JsonSerializerOptions { WriteIndented = true }));
         }

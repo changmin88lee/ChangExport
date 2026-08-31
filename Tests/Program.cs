@@ -25,7 +25,7 @@ internal static class Program
         Directory.CreateDirectory(output);
         try
         {
-            if (args.Length > 0 && args[0] == "autocad") AutoCad(output, args[2]);
+            if (args.Length > 0 && args[0] == "dwg") IndependentDwg(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));
             Console.WriteLine($"PASS: {_checks} checks"); return 0;
@@ -103,9 +103,9 @@ internal static class Program
         using var bitmap = new Bitmap(form.Width, form.Height); form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size)); bitmap.Save(path);
         form.Hide();
     }
-    private static void AutoCad(string output, string fixture)
+    private static void IndependentDwg(string output, string fixture)
     {
-        var processor = new AutoCadProcessor(); string inputHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(fixture)));
+        var processor = new ManagedDwgProcessor(); string inputHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(fixture)));
         string flatPath = Path.Combine(output, "flat.dwg");
         Console.WriteLine("Flatten synthetic sheet...");
         var flat = processor.Run(new BridgeRequest { Operation = "Flatten", OutputPath = flatPath }, fixture, output);
@@ -134,7 +134,7 @@ internal static class Program
         string conflict = Path.Combine(output, "Horizontal.dwg"); string hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(conflict)));
         bool refused = false;
         try { processor.Run(new BridgeRequest { Operation = "Merge", OutputPath = conflict }, flatPath, output); } catch (IOException) { refused = true; }
-        Check(refused && hash == Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(conflict))), "Existing DWG rejected before AutoCAD launch");
+        Check(refused && hash == Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(conflict))), "Existing DWG rejected without modifying the file");
         Console.WriteLine("Check missing linetype failure...");
         string invalidOutput = Path.Combine(output, "invalid-style.dwg"); bool invalidRejected = false;
         try
@@ -149,5 +149,10 @@ internal static class Program
         try { processor.Run(new BridgeRequest { Operation = "Flatten", OutputPath = Path.Combine(output, "cancelled.dwg") }, fixture, output, () => true); }
         catch (OperationCanceledException) { cancelled = true; }
         Check(cancelled && !File.Exists(Path.Combine(output, "cancelled.dwg")), "Cancellation publishes no DWG");
+        Assembly engine = AppDomain.CurrentDomain.GetAssemblies().Single(a => a.GetName().Name == "ACadSharp");
+        Check(engine.Location.Length == 0, "DWG engine loaded from ChangExport.dll embedded resource, not an installed CAD application");
+        Check(!typeof(ManagedDwgProcessor).Assembly.GetManifestResourceNames().Any(n => n.Contains("AutoCadBridge")), "No external CAD bridge shipped");
+        Check(!AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name is "acdbmgd" or "accoremgd" or "AcExportLayout"), "No AutoCAD runtime assembly loaded");
+        DwgRegression.Run(output, Check, Near);
     }
 }

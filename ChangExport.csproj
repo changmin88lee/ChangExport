@@ -14,14 +14,15 @@
     <Product>창Export</Product>
     <Description>한국형 Revit DWG Export 도구</Description>
     <Company>LAON ArcTec</Company>
-    <Version>0.2.0</Version>
-    <FileVersion>0.2.0.0</FileVersion>
+    <Version>0.2.1</Version>
+    <FileVersion>0.2.1.0</FileVersion>
     <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitInstallDir>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="AutoCadBridge\ChangExport.AutoCadBridge.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />
-    <EmbeddedResource Include="AutoCadBridge\bin\$(Configuration)\net48\ChangExport.AutoCadBridge.dll" LogicalName="ChangExport.AutoCadBridge.dll" />
+    <PackageReference Include="ACadSharp" Version="3.7.1" GeneratePathProperty="true" PrivateAssets="all" ExcludeAssets="runtime" />
+    <EmbeddedResource Include="$(PkgACadSharp)\lib\net8.0\ACadSharp.dll" LogicalName="ChangExport.Dependencies.ACadSharp.dll" />
+    <EmbeddedResource Include="ThirdParty\*.txt" />
     <Reference Include="RevitAPI">
       <HintPath>$(RevitInstallDir)\RevitAPI.dll</HintPath>
       <Private>false</Private>
@@ -33,7 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="AutoCadBridge\**\*.cs;Tests\**\*.cs" />
+    <Compile Remove="Tests\**\*.cs;**\obj\**\*.cs;**\bin\**\*.cs" />
     <Content Include="Data\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

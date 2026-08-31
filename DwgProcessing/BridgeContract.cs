@@ -2,7 +2,7 @@ using System.Collections.Generic;
 
 namespace ChangExport.DwgProcessing
 {
-    // Plain JSON contract shared by the .NET 8 Revit client and .NET Framework AutoCAD host.
+    // In-process DWG operation inputs and inspection results. No external host is used.
     public sealed class BridgeRequest
     {
         public string Operation { get; set; } = "";

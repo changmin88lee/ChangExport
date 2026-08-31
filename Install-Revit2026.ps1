@@ -25,6 +25,15 @@ $manifestPath = Join-Path $addinsDirectory "ChangExport.addin"
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 Copy-Item -LiteralPath $sourceAssembly -Destination $installedAssembly -Force
 
+$sourceNotices = Join-Path $root "ThirdParty"
+if (Test-Path -LiteralPath $sourceNotices) {
+    $installedNotices = Join-Path $installDirectory "ThirdParty"
+    New-Item -ItemType Directory -Path $installedNotices -Force | Out-Null
+    foreach ($notice in @("ACadSharp-LICENSE.txt", "CSUtilities-LICENSE.txt")) {
+        Copy-Item -LiteralPath (Join-Path $sourceNotices $notice) -Destination (Join-Path $installedNotices $notice) -Force
+    }
+}
+
 $sourceData = Join-Path $root "Data"
 if (Test-Path -LiteralPath $sourceData) {
     $installedData = Join-Path $installDirectory "Data"

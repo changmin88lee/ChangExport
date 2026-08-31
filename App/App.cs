@@ -30,7 +30,7 @@ public sealed class App : IExternalApplication
         AddButton(exportPanel, "ManageSheets", "시트 세트\n구성", assemblyPath,
             typeof(ManageSheetGroupsCommand), "시트를 선택해 세트를 구성하고 순서와 가로·세로 배치를 설정합니다.");
         AddButton(exportPanel, "ExportCompanyDwg", "회사 DWG\n출력", assemblyPath,
-            typeof(ExportCompanyDwgCommand), "AutoCAD 2023을 연동하여 세트별 DWG를 모형공간에 출력합니다.");
+            typeof(ExportCompanyDwgCommand), "외부 CAD 프로그램 없이 내장 엔진으로 세트별 모형공간 DWG를 출력합니다.");
 
         AddButton(supportPanel, "DwgDiagnostics", "기술\n진단", assemblyPath,
             typeof(DwgPrototypeDiagnosticsCommand), "프로젝트 매개변수와 DWG Export 준비 상태를 점검합니다.");
@@ -62,6 +62,6 @@ public sealed class App : IExternalApplication
         var data = new PushButtonData(internalName, text, assemblyPath, commandType.FullName);
         var button = (PushButton)panel.AddItem(data);
         button.ToolTip = toolTip;
-        button.LongDescription = $"Revit 2026용 창Export {ProductInfo.Version} · 모형공간 출력은 AutoCAD 2023 연동";
+        button.LongDescription = $"Revit 2026용 창Export {ProductInfo.Version} · Revit 독립 애드인 · 외부 CAD 설치 불필요";
     }
 }
