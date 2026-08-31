@@ -266,6 +266,20 @@ public sealed partial class ManagedDwgProcessor
                 }
             }
         }
+        else if (entity is Arc arc && arc.Normal.DistanceFrom(XYZ.AxisZ) < Epsilon
+            && Math.Abs(Vector(transform, XYZ.AxisX).Z) < Epsilon && Math.Abs(Vector(transform, XYZ.AxisY).Z) < Epsilon
+            && XYZ.Cross(Vector(transform, XYZ.AxisX), Vector(transform, XYZ.AxisY)).Z > 0)
+        {
+            // ACadSharp 3.7.1 rotates planar ARC angles in the opposite direction
+            // to their centers. Transform the original radius directions forward,
+            // just like the door's lines. Keep the existing nonplanar/mirror path.
+            bool full = Math.Abs(Math.Abs(arc.EndAngle - arc.StartAngle) - 2 * Math.PI) < Epsilon;
+            XYZ start = Vector(transform, new XYZ(Math.Cos(arc.StartAngle), Math.Sin(arc.StartAngle), 0));
+            XYZ end = Vector(transform, new XYZ(Math.Cos(arc.EndAngle), Math.Sin(arc.EndAngle), 0));
+            arc.ApplyTransform(transform);
+            arc.StartAngle = Math.Atan2(start.Y, start.X);
+            arc.EndAngle = full ? arc.StartAngle + 2 * Math.PI : Math.Atan2(end.Y, end.X);
+        }
         else if (entity is Ellipse ellipse)
         {
             XYZ minor = XYZ.Cross(ellipse.Normal, ellipse.MajorAxisEndPoint) * ellipse.RadiusRatio;

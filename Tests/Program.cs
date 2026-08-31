@@ -33,6 +33,7 @@ internal static class Program
             else if (args.Length > 0 && args[0] == "compare-real") PerformanceRegression.CompareRuns(args[2], args[3], Check);
             else if (args.Length > 0 && args[0] == "layer-colors") LayerColorRegression.Run(output, args[2], args[3], Check);
             else if (args.Length > 0 && args[0] == "geometry") GeometryOptionsRegression.Run(output, Check, Near, args.Length > 2 ? args[2] : null);
+            else if (args.Length > 0 && args[0] == "arcs") ArcRotationRegression.Run(output, Check, args.Length > 2 ? args[2] : null, args.Length > 3 ? args[3] : null);
             else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));
