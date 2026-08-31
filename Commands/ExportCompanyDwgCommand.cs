@@ -7,7 +7,7 @@ using ChangExport.UI;
 
 namespace ChangExport.Commands;
 
-[Transaction(TransactionMode.ReadOnly)]
+[Transaction(TransactionMode.Manual)]
 public sealed class ExportCompanyDwgCommand : IExternalCommand
 {
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)

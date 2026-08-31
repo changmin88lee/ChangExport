@@ -23,7 +23,8 @@ public sealed class DwgPrototypeDiagnosticsCommand : IExternalCommand
                 $"Revit 출력 설정: {mapping.SetupNames.Count - 1}개 + 기본값\n{status}\n시트: {SheetSetService.ReadSheets(document).Count}개\n" +
                 $"DWG 엔진: {ManagedDwgProcessor.EngineName}\n외부 CAD 프로그램: 설치/실행 불필요\n\n" +
                 "현재 출력: Revit 기본 카테고리 매핑 → 내장 엔진 시트 변환 → 세트별 모형공간 병합\n" +
-                "커스텀 필터: 다음 단계 / 기존 CAD_LAYER·Rule은 이번 출력에 미적용\n" +
+                "커스텀 필터: 현재 프로젝트 유형 이름 포함 / 독립 복제 뷰 → DWG 레이어 변환 → 임시 요소 복구\n" +
+                "기존 CAD_LAYER·구형 Rule은 이번 출력에 미적용. 필터 판정과 DWG 반영 개수는 Manifest에서 구분합니다.\n" +
                 "실제 Revit 시트의 글자·치수·해치·잘림·축척은 출력 결과 비교가 필요합니다.\n\n설정 파일: " + store.FilePath);
             return Result.Succeeded;
         }

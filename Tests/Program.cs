@@ -25,7 +25,9 @@ internal static class Program
         Directory.CreateDirectory(output);
         try
         {
-            if (args.Length > 0 && args[0] == "dwg") IndependentDwg(output, args[2]);
+            if (args.Length > 0 && args[0] == "dwg")
+            { IndependentDwg(output, args[2]); CustomLayerRegression.Run(output, Check); RevitSheetRegression.Run(output, Check, Near); }
+            else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));
             Console.WriteLine($"PASS: {_checks} checks"); return 0;
@@ -35,6 +37,36 @@ internal static class Program
     private static void Check(bool condition, string message)
     { _checks++; if (!condition) throw new InvalidOperationException(message); }
     private static void Near(double actual, double expected, string message) => Check(Math.Abs(actual - expected) < 0.0001, $"{message}: {actual} != {expected}");
+
+    private static void ActualRevitDrawings(string output, string workFolder)
+    {
+        var records = new List<object>(); var flats = new List<string>();
+        var originals = Directory.GetFiles(workFolder, "*", SearchOption.AllDirectories)
+            .ToDictionary(p => p, p => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(p))));
+        foreach (string path in Directory.GetFiles(workFolder, "sheet.dwg", SearchOption.AllDirectories))
+        {
+            string before = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+            string target = Path.Combine(output, $"sheet-{records.Count + 1:000}.dwg");
+            try
+            {
+                var result = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", RevitSheet = true, OutputPath = target }, path, output);
+                Check(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))) == before, "Original staging DWG unchanged");
+                Check(result.Success && result.PaperEntityCount == 0, "Real sheet is in model space");
+                flats.Add(target); records.Add(new { path, result });
+                Console.WriteLine($"OK {records.Count}: {path}");
+            }
+            catch (Exception ex) { records.Add(new { path, error = ex.ToString() }); Console.WriteLine($"FAIL {path}: {ex.Message}"); }
+        }
+        File.WriteAllText(Path.Combine(output, "actual-files.json"), JsonSerializer.Serialize(records, new JsonSerializerOptions { WriteIndented = true }));
+        Check(originals.All(pair => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(pair.Key))) == pair.Value), "Every original DWG and PCP unchanged");
+        Check(flats.Count == records.Count && flats.Count > 0, "Every actual Revit sheet converts");
+        foreach (string direction in new[] { "Horizontal", "Vertical" })
+        {
+            var result = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Merge", RevitSheet = true, Inputs = flats, Direction = direction, MarginMm = 25,
+                OutputPath = Path.Combine(output, direction + ".dwg") }, flats[0], output);
+            Check(result.Placements.Count == flats.Count, "Every sheet in merged real-data set");
+        }
+    }
 
     private static void Managed(string output)
     {
@@ -79,6 +111,14 @@ internal static class Program
             DataGridView grid = Descendants(layers).OfType<DataGridView>().Single();
             Check(!grid.AllowUserToResizeColumns && !grid.AllowUserToResizeRows && !grid.AllowUserToOrderColumns, "Grid resize/reorder locked");
             Check(grid.RowCount == 45 && grid.Columns["Color"].ReadOnly, "Full mapping and click-only color");
+            grid.CurrentCell = grid.Rows[0].Cells[0];
+            typeof(LayerRuleManagerForm).GetMethod("AddRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
+            var custom = (RevitLayerRow)grid.CurrentRow!.DataBoundItem;
+            Check(custom.IsCustom && grid.RowCount == 46 && custom.Caption.StartsWith("    └"), "Custom row nested under selected category");
+            grid.EndEdit(); custom.TypeNameContains = "RC"; custom.Layer = "S-RC"; custom.CutLayer = "S-RC-CUT";
+            typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
+            Check(store.Load().Setups.SelectMany(s => s.Layers).Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
+            Render(layers, Path.Combine(output, "layers-filter.png"));
             layers.Size = layers.MinimumSize; Render(layers, Path.Combine(output, "layers-small.png"));
         }
         using (var colors = new AciColorDialog(3))

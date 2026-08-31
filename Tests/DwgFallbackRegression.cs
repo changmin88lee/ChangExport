@@ -50,7 +50,7 @@ internal static class DwgFallbackRegression
         mixed.Entities.OfType<Insert>().Single().Block.Entities.Add(new Solid3D());
         var geometryWarnings = new List<string>();
         var converted = (CadDocument)typeof(ManagedDwgProcessor).GetMethod("Flatten", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
-            .Invoke(null, new object[] { mixed, geometryWarnings, (Action)(() => { }) })!;
+            .Invoke(null, new object[] { mixed, geometryWarnings, (Action)(() => { }), false })!;
         string geometryPath = Path.Combine(output, "shared-3d-geometry.dwg"); DwgWriter.Write(geometryPath, converted);
         var remaining = DwgRegression.Walk(DwgReader.Read(geometryPath).ModelSpace).ToList();
         check(!remaining.OfType<ModelerGeometry>().Any() && remaining.OfType<Line>().Any() && remaining.OfType<Dimension>().Any(),

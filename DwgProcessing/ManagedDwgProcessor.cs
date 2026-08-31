@@ -11,7 +11,7 @@ using CSMath;
 namespace ChangExport.DwgProcessing;
 
 /// <summary>Managed, in-process DWG processing. Never starts or probes a CAD application.</summary>
-public sealed class ManagedDwgProcessor
+public sealed partial class ManagedDwgProcessor
 {
     public const string EngineName = "내장 DWG 엔진 (ACadSharp 3.7.1)";
     private const double Epsilon = 1e-8;
@@ -24,9 +24,20 @@ public sealed class ManagedDwgProcessor
         if (File.Exists(request.OutputPath)) throw new IOException("기존 DWG는 덮어쓰지 않습니다: " + request.OutputPath);
         if (request.Operation is not ("Flatten" or "Merge")) throw new ArgumentException("지원하지 않는 DWG 작업입니다.");
         var response = new BridgeResponse { OutputPath = request.OutputPath };
-        CadDocument document = request.Operation == "Flatten"
-            ? Flatten(Read(inputDrawing, response.Warnings), response.Warnings, Check)
-            : Merge(request, response, Check);
+        CadDocument document;
+        if (request.Operation == "Flatten")
+        {
+            CadDocument source = Read(inputDrawing, response.Warnings);
+            var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers);
+            if (request.RevitSheet) PrepareRevitSheet(source, response);
+            document = Flatten(source, response.Warnings, Check, request.RevitSheet);
+            RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
+            document = ApplyCustomRemaps(document, request, response);
+            ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
+                .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
+        }
+        else document = Merge(request, response, Check);
         Check();
         Directory.CreateDirectory(workingDirectory);
         string temporary = Path.Combine(workingDirectory, "managed_" + Guid.NewGuid().ToString("N") + ".dwg");
@@ -37,7 +48,7 @@ public sealed class ManagedDwgProcessor
             {
                 if (e.NotificationType != NotificationType.None) issues.Add(e.Message);
             });
-            if (issues.Count > 0) throw new InvalidDataException("DWG 저장 중 누락 가능성이 발견되어 중단했습니다: " + string.Join(" / ", issues.Take(5)));
+            if (issues.Count > 0) throw new InvalidDataException("DWG 저장 중 누락 가능성이 발견되어 중단했습니다: " + string.Join(" / ", issues));
             Check();
             CadDocument reopened = Read(temporary, response.Warnings);
             VerifyRoundTrip(document, reopened);
@@ -70,10 +81,11 @@ public sealed class ManagedDwgProcessor
             else if (e.Message.Contains("UnknownNonGraphicalObject", StringComparison.Ordinal)
                 || e.Message.Contains("dictionary ACAD_DETAILVIEWSTYLE", StringComparison.Ordinal)
                 || e.Message.Contains("dictionary ACAD_SECTIONVIEWSTYLE", StringComparison.Ordinal)
-                || e.Message.Contains("ACadSharp.Objects.TableStyle+CellStyle", StringComparison.Ordinal)) warnings.Add(e.Message);
+                || e.Message.Contains("ACadSharp.Objects.TableStyle+CellStyle", StringComparison.Ordinal)
+                || IsRevitMetadataWarning(e.Message)) warnings.Add(e.Message);
             else errors.Add(e.Message);
         });
-        if (errors.Count > 0) throw new InvalidDataException("DWG를 손실 없이 읽을 수 없습니다: " + string.Join(" / ", errors.Take(5)));
+        if (errors.Count > 0) throw new InvalidDataException("DWG 읽기 실패 (" + path + "): " + string.Join(" / ", errors));
         if (doc.BlockRecords.SelectMany(b => b.Entities).Any(e => e is TableEntity)
             && warnings.Any(w => w.Contains("TableStyle+CellStyle", StringComparison.Ordinal)))
             throw new InvalidDataException("CAD 표의 문자 스타일을 읽을 수 없어 출력을 중단했습니다.");
@@ -83,8 +95,6 @@ public sealed class ManagedDwgProcessor
             throw new NotSupportedException("내장 엔진은 한글 보존을 위해 DWG 2010 이상만 출력합니다. Revit 출력 설정에서 DWG 2010 이상을 선택하세요.");
         foreach (BlockRecord block in doc.BlockRecords)
         {
-            if ((block.Flags & (BlockTypeFlags.XRef | BlockTypeFlags.XRefOverlay)) != 0)
-                throw new NotSupportedException("외부 참조가 남아 있습니다. 자체 포함 DWG로 출력해야 합니다: " + block.Name);
             foreach (Entity entity in block.Entities)
             {
                 SnapshotTextField(entity, warnings);
@@ -171,7 +181,7 @@ public sealed class ManagedDwgProcessor
     private static object SegmentSignature(LineType.Segment s) =>
         (s.Length, s.Flags, s.Offset, s.Rotation, s.Scale, s.ShapeNumber, s.Text, s.Style?.Filename, s.Style?.BigFontFilename);
 
-    private static CadDocument Flatten(CadDocument source, List<string> warnings, Action check)
+    private static CadDocument Flatten(CadDocument source, List<string> warnings, Action check, bool revitSheet = false)
     {
         var layouts = source.Layouts.Where(l => l.IsPaperSpace && l.AssociatedBlock.Entities.Any(e => e is not Viewport || e is Viewport v && !v.RepresentsPaper)).ToList();
         if (layouts.Count != 1) throw new InvalidDataException("시트 DWG에는 내용이 있는 배치가 정확히 하나 있어야 합니다.");
@@ -185,14 +195,15 @@ public sealed class ManagedDwgProcessor
         CadDocument target = CreateOutput(source);
         var sheet = new BlockRecord("CE_SHEET") { Units = UnitsType.Millimeters };
         var omitted = new List<Viewport>();
-        bool hasOmittedViews = layout.AssociatedBlock.Entities.OfType<Viewport>().Any(v => IsActiveView(v) && OmitViewport(v));
+        bool Active(Viewport v) => revitSheet ? IsEnabledViewport(v) : IsActiveView(v);
+        bool hasOmittedViews = layout.AssociatedBlock.Entities.OfType<Viewport>().Any(v => Active(v) && OmitViewport(v));
         int index = 0;
         foreach (Entity entity in layout.AssociatedBlock.GetSortedEntities())
         {
             check();
             if (entity is Viewport viewport)
             {
-                if (!IsActiveView(viewport)) continue;
+                if (!Active(viewport)) continue;
                 if (OmitViewport(viewport))
                 {
                     omitted.Add(viewport);
@@ -361,6 +372,7 @@ public sealed class ManagedDwgProcessor
         {
             check();
             CadDocument source = Read(request.Inputs[n], response.Warnings);
+            if (request.RevitSheet && target != null) IsolateConflictingStyles(source, target, n + 1, response.Warnings);
             if (source.Header.InsUnits != UnitsType.Millimeters || source.Layouts.Where(l => l.IsPaperSpace).Any(l => l.AssociatedBlock.Entities.Any(e => e is not Viewport)))
                 throw new InvalidDataException("병합 입력은 mm 단위의 모형공간 시트여야 합니다.");
             if (target == null) target = CreateOutput(source);
@@ -381,7 +393,14 @@ public sealed class ManagedDwgProcessor
             response.Placements.Add(new SheetPlacement { Source = request.Inputs[n], X = x, Y = y, Width = box.Width, Height = box.Height });
             cursor += (request.Direction == "Horizontal" ? box.Width : box.Height) + request.MarginMm;
         }
-        foreach (LayerAppearance edit in request.LayerStyles)
+        ApplyLayerStyles(target!, request.LayerStyles);
+        SetExtents(target!);
+        return target!;
+    }
+
+    private static void ApplyLayerStyles(CadDocument target, IEnumerable<LayerAppearance> styles)
+    {
+        foreach (LayerAppearance edit in styles)
         {
             if (!target!.Layers.TryGetValue(edit.Layer, out Layer layer)) continue;
             if (!string.IsNullOrWhiteSpace(edit.Linetype))
@@ -395,8 +414,6 @@ public sealed class ManagedDwgProcessor
                 layer.LineWeight = (LineWeightType)edit.Lineweight.Value;
             }
         }
-        SetExtents(target!);
-        return target!;
     }
 
     private static void VerifyRoundTrip(CadDocument expected, CadDocument actual)

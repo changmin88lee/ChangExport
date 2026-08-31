@@ -20,12 +20,15 @@ public sealed class RevitLayerMappingService
         using DWGExportOptions options = CreateOptions(setupName);
         using ExportLayerTable table = options.GetExportLayerTable();
         var rows = new List<RevitLayerRow>();
-        var saved = config.Setups.FirstOrDefault(s => s.SetupName == setupName)?.Layers
-            .ToDictionary(r => r.Key) ?? new Dictionary<string, RevitLayerRow>();
+        var savedRows = config.Setups.FirstOrDefault(s => s.SetupName == setupName)?.Layers ?? new List<RevitLayerRow>();
+        var saved = savedRows.ToDictionary(r => r.Key);
         foreach (var pair in table)
         {
             ExportLayerKey key = pair.Key;
             ExportLayerInfo value = pair.Value;
+            // Revit explicitly marks import-file categories. Do not guess from a .dwg suffix,
+            // or confuse the export table's native model/annotation categories with CAD layers.
+            if (value.CategoryType is LayerCategoryType.Imported or LayerCategoryType.Modifier) continue;
             var row = new RevitLayerRow
             {
                 Category = key.CategoryName, Subcategory = key.SubCategoryName, SpecialType = (int)key.SpecialType,
@@ -45,9 +48,18 @@ public sealed class RevitLayerMappingService
             }
             rows.Add(row);
         }
-        return rows.OrderBy(r => r.Category, StringComparer.CurrentCultureIgnoreCase)
+        var ordered = rows.OrderBy(r => r.Category, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(r => r.Subcategory.Length == 0 ? 0 : 1)
             .ThenBy(r => r.Subcategory, StringComparer.CurrentCultureIgnoreCase).ThenBy(r => r.SpecialType).ToList();
+        var result = new List<RevitLayerRow>();
+        foreach (var group in ordered.GroupBy(r => r.Category))
+        {
+            var parent = group.FirstOrDefault(r => r.Subcategory.Length == 0);
+            if (parent != null) result.Add(parent);
+            result.AddRange(savedRows.Where(r => r.IsCustom && r.Category == group.Key).Select(r => r.Copy()));
+            result.AddRange(group.Where(r => r != parent));
+        }
+        return result;
     }
 
     public DWGExportOptions Apply(string setupName, IReadOnlyList<RevitLayerRow> rows)
@@ -56,7 +68,7 @@ public sealed class RevitLayerMappingService
         if (issues.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, issues.Take(12)));
         DWGExportOptions options = CreateOptions(setupName);
         using ExportLayerTable table = options.GetExportLayerTable();
-        foreach (RevitLayerRow row in rows.Where(r => r.HasChanges))
+        foreach (RevitLayerRow row in rows.Where(r => r.HasChanges && !r.IsCustom))
         {
             using var key = new ExportLayerKey(row.Category, row.Subcategory, (SpecialType)row.SpecialType);
             ExportLayerInfo value = table[key];
@@ -72,10 +84,18 @@ public sealed class RevitLayerMappingService
 
     public static IReadOnlyList<string> Validate(IEnumerable<RevitLayerRow> rows)
     {
+        var all = rows.ToList();
         var issues = new List<string>();
         var appearances = new Dictionary<string, LayerAppearance>(StringComparer.OrdinalIgnoreCase);
-        foreach (RevitLayerRow row in rows.Where(r => r.HasChanges))
+        foreach (RevitLayerRow row in all.Where(r => r.HasChanges))
         {
+            if (row.IsCustom)
+            {
+                if (string.IsNullOrWhiteSpace(row.TypeNameContains)) issues.Add($"{row.Category}: 필터의 포함 문자를 입력하세요.");
+                if (string.IsNullOrWhiteSpace(row.RuleId)) issues.Add($"{row.Category}: 필터 식별자가 없습니다. 필터를 다시 추가하세요.");
+                if (!ValidLayerName(row.Layer) || !ValidLayerName(row.CutLayer)) issues.Add($"{row.Category}: 필터의 투영/절단 레이어를 입력하세요.");
+                if (row.Color is < 1 or > 255 || row.CutColor is < 1 or > 255) issues.Add($"{row.Category}: 필터 색상은 1~255입니다.");
+            }
             if (row.Layer != row.OriginalLayer && !ValidLayerName(row.Layer)) issues.Add($"{row.Category}: 투영 레이어 이름을 확인하세요.");
             if (row.CutLayer != row.OriginalCutLayer && !ValidLayerName(row.CutLayer)) issues.Add($"{row.Category}: 절단 레이어 이름을 확인하세요.");
             if (row.Color != row.OriginalColor && row.Color is < 1 or > 255) issues.Add($"{row.Category}: 색상 번호는 1~255입니다.");
@@ -90,6 +110,11 @@ public sealed class RevitLayerMappingService
                 appearances[layer] = style;
             }
         }
+        if (all.Where(r => r.IsCustom).GroupBy(r => r.RuleId).Any(g => g.Count() > 1)) issues.Add("중복된 필터 식별자가 있습니다.");
+        foreach (var group in all.SelectMany(r => new[] { (r.Layer, r.Color, r.IsCustom), (r.CutLayer, r.CutColor, r.IsCustom) })
+            .Where(v => !string.IsNullOrWhiteSpace(v.Item1) && v.Item2 is >= 1 and <= 255).GroupBy(v => v.Item1, StringComparer.OrdinalIgnoreCase))
+            if (group.Any(v => v.IsCustom) && group.Select(v => v.Item2).Distinct().Count() > 1)
+                issues.Add($"{group.Key}: 기본 항목/필터가 같은 레이어에 다른 색상을 지정합니다. 다른 레이어 이름을 사용하세요.");
         return issues.Distinct().ToList();
     }
 

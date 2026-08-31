@@ -20,8 +20,8 @@ public sealed class ExportResultForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
 
-        root.Controls.Add(UiTheme.Heading(result.Cancelled ? "DWG 출력 취소" : result.FailedCount == 0 ? "모형공간 DWG 출력 완료" : "DWG 출력 확인 필요"));
-        root.Controls.Add(UiTheme.Muted($"성공 {result.SuccessCount} · 실패 {result.FailedCount} · 안내가 있는 세트 {result.Items.Count(i => i.Warnings.Count > 0)} · Manifest: {result.ManifestPath}"));
+        root.Controls.Add(UiTheme.Heading(result.Cancelled ? "DWG 출력 취소" : result.FailedCount == 0 && result.Items.All(i => i.Warnings.Count == 0) ? "모형공간 DWG 저장 완료" : "DWG 출력 확인 필요"));
+        root.Controls.Add(UiTheme.Muted($"저장 {result.SuccessCount} · 실패 {result.FailedCount} · 안내가 있는 세트 {result.Items.Count(i => i.Warnings.Count > 0)} · Manifest: {result.ManifestPath}"));
         var list = new ListBox { Dock = DockStyle.Fill, Margin = new Padding(0, 14, 0, 0), HorizontalScrollbar = true };
         foreach (ExportItemResult item in result.Items)
         {

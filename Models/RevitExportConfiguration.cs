@@ -16,6 +16,9 @@ public sealed class ExportSetupEdits
 
 public sealed class RevitLayerRow
 {
+    public bool IsCustom { get; set; }
+    public string RuleId { get; set; } = string.Empty;
+    public string TypeNameContains { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public string Subcategory { get; set; } = string.Empty;
     public int SpecialType { get; set; }
@@ -34,12 +37,14 @@ public sealed class RevitLayerRow
     [System.Text.Json.Serialization.JsonIgnore]
     public int LineweightChoice { get => Lineweight ?? -1; set => Lineweight = value < 0 ? null : value; }
     [System.Text.Json.Serialization.JsonIgnore]
-    public string Caption => string.IsNullOrEmpty(Subcategory) ? Category : "    └ " + Subcategory;
+    public string Caption => IsCustom ? "    └ 필터: 유형 이름 포함" : string.IsNullOrEmpty(Subcategory) ? Category : "    └ " + Subcategory;
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool HasChanges => Layer != OriginalLayer || Color != OriginalColor || CutLayer != OriginalCutLayer
+    public bool HasChanges => IsCustom || Layer != OriginalLayer || Color != OriginalColor || CutLayer != OriginalCutLayer
         || CutColor != OriginalCutColor || Linetype.Length > 0 || Lineweight.HasValue;
     [System.Text.Json.Serialization.JsonIgnore]
-    public string Key => $"{Category}\u001f{Subcategory}\u001f{SpecialType}";
+    public string Key => IsCustom ? "rule:" + RuleId : $"{Category}\u001f{Subcategory}\u001f{SpecialType}";
+    public bool Matches(string category, string typeName) => IsCustom && Category == category
+        && !string.IsNullOrWhiteSpace(TypeNameContains) && typeName.Contains(TypeNameContains, StringComparison.OrdinalIgnoreCase);
     public RevitLayerRow Copy() => (RevitLayerRow)MemberwiseClone();
 }
 
