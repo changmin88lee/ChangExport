@@ -21,12 +21,12 @@ public sealed class ExportCompanyDwgCommand : IExternalCommand
             var mapping = new RevitLayerMappingService(document);
             using var settings = new ExportSettingsForm(sheets, SheetSetService.ReadSets(document, configuration, sheets), RevitLayerMappingService.SetupNames(configuration),
                 configuration.SelectedOutputSetup, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "창Export", DateTime.Now.ToString("yyyyMMdd")),
-                sets => { configuration.SheetSets = sets.Select(s => s.Copy()).ToList(); store.Save(configuration); }, configuration.WideLineKeyword);
+                sets => { configuration.SheetSets = sets.Select(s => s.Copy()).ToList(); store.Save(configuration); });
             if (settings.ShowDialog() != System.Windows.Forms.DialogResult.OK) return Result.Cancelled;
             var layers = mapping.Read(settings.SelectedSetup, configuration);
-            configuration.SelectedOutputSetup = settings.SelectedSetup; configuration.WideLineKeyword = settings.WideLineKeyword; store.Save(configuration);
+            configuration.SelectedOutputSetup = settings.SelectedSetup; store.Save(configuration);
             using var progress = new ExportProgressForm((report, cancel, pump) => new RevitDwgExportService().Export(document,
-                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, report, cancel, pump, settings.WideLineKeyword));
+                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, report, cancel, pump, configuration.WideLineKeyword));
             progress.ShowDialog();
             if (progress.Failure is not null) throw progress.Failure;
             var result = progress.Result ?? throw new InvalidOperationException("출력 결과가 없습니다.");

@@ -32,10 +32,12 @@ public sealed class App : IExternalApplication
         AddButton(exportPanel, "ExportCompanyDwg", "DWG\n출력", assemblyPath,
             typeof(ExportCompanyDwgCommand), "외부 CAD 프로그램 없이 내장 엔진으로 세트별 모형공간 DWG를 출력합니다.");
 
-        AddButton(supportPanel, "DwgDiagnostics", "기술\n진단", assemblyPath,
-            typeof(DwgPrototypeDiagnosticsCommand), "프로젝트 매개변수와 DWG Export 준비 상태를 점검합니다.");
         AddButton(supportPanel, "ChangExportHelp", "도움말", assemblyPath,
             typeof(HelpCommand), "창Export 베타 사용 방법과 현재 지원 범위를 표시합니다.");
+        AddButton(supportPanel, "ChangExportSettings", "설정", assemblyPath,
+            typeof(SettingsCommand), "전역폭 판별 문자열과 시트 세트별 배치 간격을 설정합니다.");
+        AddButton(supportPanel, "DwgDiagnostics", "기술\n진단", assemblyPath,
+            typeof(DwgPrototypeDiagnosticsCommand), "프로젝트 매개변수와 DWG Export 준비 상태를 점검합니다.");
 
         return Result.Succeeded;
     }

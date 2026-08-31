@@ -28,8 +28,7 @@ public sealed class SheetGroupManagerForm : Form
         _name = new TextBox { Width = 180, PlaceholderText = "새 세트 이름", Margin = new Padding(0, 6, 8, 0) }; toolbar.Controls.Add(_name);
         var create = UiTheme.PrimaryButton("+ 선택 시트 세트"); create.Click += (_, _) => Act(() => _editor.Combine(_name.Text));
         var release = UiTheme.SecondaryButton("세트 해제"); release.Click += (_, _) => Act(() => _editor.Release(_sheets));
-        var spacing = UiTheme.SecondaryButton("배치 간격 설정"); spacing.Click += (_, _) => ConfigureSpacing();
-        toolbar.Controls.Add(create); toolbar.Controls.Add(release); toolbar.Controls.Add(spacing); root.Controls.Add(toolbar);
+        toolbar.Controls.Add(create); toolbar.Controls.Add(release); root.Controls.Add(toolbar);
         _cards = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         _cards.ClientSizeChanged += (_, _) => ResizeCards(); root.Controls.Add(_cards);
         _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 간격 단위는 확대 후 모형공간 mm입니다."); root.Controls.Add(_status);
@@ -42,14 +41,6 @@ public sealed class SheetGroupManagerForm : Form
     private void Act(Action action)
     {
         try { action(); Render(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "세트 구성"); }
-    }
-    private void ConfigureSpacing()
-    {
-        using var dialog = new SheetSpacingSettingsForm(_editor.Sets);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        var margins = dialog.ResultSets.ToDictionary(s => s.Id, s => s.MarginMm);
-        foreach (var set in _editor.Sets) set.MarginMm = margins[set.Id];
-        Render();
     }
     private void Save()
     {
@@ -107,7 +98,7 @@ public sealed class SheetGroupManagerForm : Form
     {
         foreach (Panel card in _cards.Controls)
             card.BackColor = _editor.SelectedIds.Contains((string)card.Tag!) ? Color.FromArgb(216, 234, 251) : Color.White;
-        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 간격은 모형공간 mm";
+        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 간격 변경: 창Export 탭 → 설정";
     }
     private void ResizeCards()
     { foreach (Control card in _cards.Controls) card.Width = Math.Max(780, _cards.ClientSize.Width - 28); }

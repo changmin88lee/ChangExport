@@ -24,15 +24,13 @@ public sealed class ExportSettingsForm : Form
     private BindingList<ExportSetChoice> _choices = new();
     private readonly ComboBox _setup;
     private readonly TextBox _folder;
-    private readonly TextBox _wideLineKeyword;
-    public string WideLineKeyword => _wideLineKeyword.Text.Trim();
     public string SelectedSetup => (_setup.SelectedItem as SetupItem)?.Name ?? string.Empty;
     public string OutputFolder => _folder.Text.Trim();
     public IReadOnlyList<SheetSetDefinition> SelectedSets => _choices.Where(s => s.Selected).Select(s => s.Set.Copy()).ToList();
     private sealed record SetupItem(string Name) { public override string ToString() => Name.Length == 0 ? "기본값" : Name; }
 
     public ExportSettingsForm(IReadOnlyList<SheetDescriptor> sheets, IReadOnlyList<SheetSetDefinition> sets,
-        IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets, string wideLineKeyword = "##")
+        IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets)
     {
         _sheets = sheets; _saveSets = saveSets;
         Text = "모형공간 DWG 출력"; ClientSize = new Size(1050, 700); MinimumSize = new Size(900, 590); UiTheme.Apply(this);
@@ -43,7 +41,7 @@ public sealed class ExportSettingsForm : Form
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         title.Controls.Add(UiTheme.Heading("세트별 DWG · 모형공간 출력"));
         title.Controls.Add(UiTheme.Muted("Revit 독립 실행 · 내장 DWG 엔진으로 시트의 도곽/뷰/주석을 모형공간에 배치합니다.")); root.Controls.Add(title);
-        var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 3, Margin = new Padding(0, 14, 0, 8) };
+        var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 2, Margin = new Padding(0, 14, 0, 8) };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         settings.Controls.Add(new Label { Text = "출력 설정", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _setup = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -54,11 +52,7 @@ public sealed class ExportSettingsForm : Form
         settings.Controls.Add(new Label { Text = "출력 폴더", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         _folder = new TextBox { Dock = DockStyle.Fill, Text = defaultFolder }; settings.Controls.Add(_folder, 1, 1);
         var browse = UiTheme.SecondaryButton("찾아보기"); browse.Click += (_, _) => { using var picker = new FolderBrowserDialog { SelectedPath = OutputFolder }; if (picker.ShowDialog(this) == DialogResult.OK) _folder.Text = picker.SelectedPath; }; settings.Controls.Add(browse, 2, 1); root.Controls.Add(settings);
-        settings.Controls.Add(new Label { Text = "전역폭 판별 문자열", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
-        _wideLineKeyword = new TextBox { Text = wideLineKeyword, Dock = DockStyle.Fill, MaxLength = 100, AccessibleName = "전역폭 판별 문자열" };
-        settings.Controls.Add(_wideLineKeyword, 1, 2);
-        settings.Controls.Add(UiTheme.Muted("빈 값: 변환 안 함"), 2, 2);
-        var notice = UiTheme.Muted("DWG 2010 · 모형 mm · 가장 큰 2D 뷰의 축척으로 시트를 확대합니다. 혼합 축척은 상대 크기를 유지합니다.\n지정 문자열이 있는 선 스타일: Revit 출력 굵기를 전역폭으로 변환합니다. 문자열은 출력 시 저장됩니다.\n모형 패밀리·도곽은 형상이 같을 때 블록 공유, 벽·바닥·독립 주석은 개별 객체입니다. 원근·음영은 생략, 이미지는 사각형으로 대체합니다.");
+        var notice = UiTheme.Muted("DWG 2010 · 모형공간 mm · 시트별 축척 적용 · 전역폭·간격 변경: 창Export 탭 → 설정\n원근·음영 뷰는 생략하며 이미지는 사각형으로 대체합니다.");
         notice.MaximumSize = new Size(980, 0); notice.Margin = new Padding(0, 0, 0, 12); root.Controls.Add(notice);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(ExportSetChoice.Selected), HeaderText = "출력", FillWeight = 40 });
@@ -72,8 +66,7 @@ public sealed class ExportSettingsForm : Form
         var cancel = UiTheme.SecondaryButton("취소"); cancel.DialogResult = DialogResult.Cancel;
         var all = UiTheme.SecondaryButton("전체 선택"); all.Click += (_, _) => { foreach (var c in _choices) c.Selected = true; _grid.Refresh(); };
         var none = UiTheme.SecondaryButton("전체 해제"); none.Click += (_, _) => { foreach (var c in _choices) c.Selected = false; _grid.Refresh(); };
-        var spacing = UiTheme.SecondaryButton("배치 간격 설정"); spacing.Click += (_, _) => ConfigureSpacing();
-        actions.Controls.Add(run); actions.Controls.Add(cancel); actions.Controls.Add(none); actions.Controls.Add(all); actions.Controls.Add(spacing); root.Controls.Add(actions); CancelButton = cancel;
+        actions.Controls.Add(run); actions.Controls.Add(cancel); actions.Controls.Add(none); actions.Controls.Add(all); root.Controls.Add(actions); CancelButton = cancel;
         Bind(sets);
     }
     private void Bind(IEnumerable<SheetSetDefinition> sets)
@@ -87,21 +80,6 @@ public sealed class ExportSettingsForm : Form
         using var dialog = new SheetGroupManagerForm(_sheets, _choices.Select(c => c.Set));
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         try { _saveSets(dialog.ResultSets); Bind(dialog.ResultSets); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "세트 저장 실패"); }
-    }
-    private void ConfigureSpacing()
-    {
-        _grid.EndEdit();
-        using var dialog = new SheetSpacingSettingsForm(_choices.Select(c => c.Set));
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        try
-        {
-            var result = dialog.ResultSets;
-            _saveSets(result);
-            var margins = result.ToDictionary(s => s.Id, s => s.MarginMm);
-            foreach (var choice in _choices) choice.Set.MarginMm = margins[choice.Set.Id];
-            _grid.Refresh();
-        }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "간격 저장 실패"); }
     }
     private void Execute()
     {

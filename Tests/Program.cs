@@ -144,9 +144,8 @@ internal static class Program
         using (var export = new ExportSettingsForm(sheets, grouped, new[] { "", "프로젝트 출력 설정" }, "", output, _ => { }))
         {
             Render(export, Path.Combine(output, "export.png")); Check(export.SelectedSets.Count == grouped.Count, "Export selects whole sets");
-            Check(export.WideLineKeyword == "##", "Export UI defaults to ##");
-            var keyword = Descendants(export).OfType<TextBox>().Single(t => t.AccessibleName == "전역폭 판별 문자열");
-            keyword.Text = "  전역폭  "; Check(export.WideLineKeyword == "전역폭", "Export UI reads the changed keyword");
+            Check(!Descendants(export).OfType<TextBox>().Any(t => t.AccessibleName == "전역폭 판별 문자열")
+                && !Descendants(export).OfType<Button>().Any(b => b.Text == "배치 간격 설정"), "Export window no longer duplicates preferences controls");
             export.Size = export.MinimumSize; Render(export, Path.Combine(output, "export-small.png"));
         }
         var exportResult = new ExportRunResult { OutputFolder = output, WorkFolder = output, ManifestPath = "Manifest.json" };
