@@ -7,6 +7,7 @@ public sealed class RevitExportConfiguration
     public List<ExportSetupEdits> Setups { get; set; } = new();
     // Old Revit setup edits remain in Setups for preservation; they are not auto-imported.
     public string SelectedOutputSetup { get; set; } = string.Empty;
+    public string WideLineKeyword { get; set; } = "##";
     public List<ExportSetupEdits> OutputSetups { get; set; } = new() { new() };
     public List<SheetSetDefinition> SheetSets { get; set; } = new();
 }

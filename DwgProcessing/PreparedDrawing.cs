@@ -27,6 +27,9 @@ public sealed partial class ManagedDwgProcessor
         var check = CreateCheck(cancel, pump); check();
         var clock = Stopwatch.StartNew();
         var response = new BridgeResponse { OutputPath = request.OutputPath };
+        var geometry = new GeometryContext(request);
+        foreach (var drawing in drawings)
+        foreach (var pair in drawing.Response.FamilyBlocks) geometry.Families.TryAdd(pair.Key, pair.Value);
         request.Inputs = drawings.Select(d => d.Source).ToList();
         foreach (var drawing in drawings) drawing.Consumed = true;
         CadDocument document;
@@ -37,11 +40,12 @@ public sealed partial class ManagedDwgProcessor
             var box = Bounds(source.Entities);
             double y = request.Direction == "Vertical" ? -box.Height : 0;
             ApplyLayerStyles(source, request.LayerStyles);
-            document = EditableModel(source, response, check, Transform.CreateTranslation(new XYZ(-box.MinX, y - box.MinY, 0)));
+            document = EditableModel(source, response, check, Transform.CreateTranslation(new XYZ(-box.MinX, y - box.MinY, 0)), geometry);
             response.Placements.Add(new SheetPlacement { Source = drawings[0].Source, X = 0, Y = y, Width = box.Width, Height = box.Height });
         }
-        else document = EditableModel(Merge(request, response, check, drawings), response, check);
+        else document = EditableModel(Merge(request, response, check, drawings), response, check, geometry: geometry);
         if (request.UseLayerColors) NormalizeLayerColors(document, response, check);
+        DeduplicateFamilies(document, response, geometry);
         response.TimingsMs["merge"] = clock.Elapsed.TotalMilliseconds;
         return SavePrepared(document, response, request.OutputPath, workingDirectory, check);
     }

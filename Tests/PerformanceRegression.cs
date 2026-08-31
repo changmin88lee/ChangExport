@@ -58,9 +58,25 @@ internal static class PerformanceRegression
             Compare(bySource[source], entry.GetProperty("result").GetProperty("OutputPath").GetString()!, check);
         }
     }
-    internal static void Compare(string before, string after, Action<bool, string> check, bool ignoreColors = false)
+    internal static void Compare(string before, string after, Action<bool, string> check, bool ignoreColors = false, bool normalizePeriodicAngles = false)
     {
         var left = DwgReader.Read(before); var right = DwgReader.Read(after);
+        if (normalizePeriodicAngles)
+        {
+            // A block transform/write can encode the same hatch endpoint as +PI or
+            // -PI. Compare modulo one revolution; all other geometry stays strict.
+            foreach (var entity in left.BlockRecords.Concat(right.BlockRecords).SelectMany(b => b.Entities).OfType<Hatch>())
+            foreach (var arc in entity.Paths.SelectMany(p => p.Edges).OfType<Hatch.BoundaryPath.Arc>())
+            {
+                static double Angle(double a)
+                {
+                    double value = Math.Round(Math.Atan2(Math.Sin(a), Math.Cos(a)), 6);
+                    return value == -Math.Round(Math.PI, 6) ? Math.Round(Math.PI, 6) : value == 0 ? 0 : value;
+                }
+                bool full = Math.Abs(Math.Abs(arc.EndAngle - arc.StartAngle) - 2 * Math.PI) < 1e-8;
+                arc.StartAngle = Angle(arc.StartAngle); arc.EndAngle = full ? arc.StartAngle + 2 * Math.PI : Angle(arc.EndAngle);
+            }
+        }
         check(left.Entities.Count == right.Entities.Count, $"Entity count preserved: {Path.GetFileName(after)}");
         check(left.Header.ModelSpaceExtMin.DistanceFrom(right.Header.ModelSpaceExtMin) < 1e-5
             && left.Header.ModelSpaceExtMax.DistanceFrom(right.Header.ModelSpaceExtMax) < 1e-5, "Drawing extents preserved");

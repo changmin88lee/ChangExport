@@ -32,6 +32,7 @@ internal static class Program
             else if (args.Length > 0 && args[0] == "performance") { PerformanceRegression.Run(output, args[2], args[3], Check); PreparationQueueRegression.Run(args[2], Check); }
             else if (args.Length > 0 && args[0] == "compare-real") PerformanceRegression.CompareRuns(args[2], args[3], Check);
             else if (args.Length > 0 && args[0] == "layer-colors") LayerColorRegression.Run(output, args[2], args[3], Check);
+            else if (args.Length > 0 && args[0] == "geometry") GeometryOptionsRegression.Run(output, Check, Near, args.Length > 2 ? args[2] : null);
             else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));
@@ -140,7 +141,13 @@ internal static class Program
         using (var sets = new SheetGroupManagerForm(sheets, grouped))
         { Render(sets, Path.Combine(output, "sets.png")); sets.Size = sets.MinimumSize; Render(sets, Path.Combine(output, "sets-small.png")); }
         using (var export = new ExportSettingsForm(sheets, grouped, new[] { "", "프로젝트 출력 설정" }, "", output, _ => { }))
-        { Render(export, Path.Combine(output, "export.png")); Check(export.SelectedSets.Count == grouped.Count, "Export selects whole sets"); }
+        {
+            Render(export, Path.Combine(output, "export.png")); Check(export.SelectedSets.Count == grouped.Count, "Export selects whole sets");
+            Check(export.WideLineKeyword == "##", "Export UI defaults to ##");
+            var keyword = Descendants(export).OfType<TextBox>().Single(t => t.AccessibleName == "전역폭 판별 문자열");
+            keyword.Text = "  전역폭  "; Check(export.WideLineKeyword == "전역폭", "Export UI reads the changed keyword");
+            export.Size = export.MinimumSize; Render(export, Path.Combine(output, "export-small.png"));
+        }
         var exportResult = new ExportRunResult { OutputFolder = output, WorkFolder = output, ManifestPath = "Manifest.json" };
         var warningItem = new ExportItemResult("구조 세트", "", true, "구조 세트.dwg");
         warningItem.Warnings.Add("시트 A101: 생략: 원근·음영 뷰포트. 다른 도면은 저장했습니다.");

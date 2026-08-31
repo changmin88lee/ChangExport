@@ -29,16 +29,18 @@ public sealed partial class ManagedDwgProcessor
 
     // Work on detached clones only. The source RVT, staging DWGs and existing outputs
     // are never edited. Dimensions keep their native entity and display definition.
-    private static CadDocument EditableModel(CadDocument source, BridgeResponse response, Action check, Transform? placement = null)
+    private static CadDocument EditableModel(CadDocument source, BridgeResponse response, Action check, Transform? placement = null, GeometryContext? geometry = null)
     {
         var target = CreateOutput(source);
         int dimensionIndex = 0, clipIndex = 0;
         var retained = new Dictionary<string, int>();
         var initial = placement ?? Transform.CreateScaling(new XYZ(response.ModelScale));
+        var output = new List<Entity>();
 
-        void Add(Entity original, Transform transform, List<List<XY>> clips, Entity? parent, int depth)
+        void Add(Entity original, Transform transform, List<List<XY>> clips, Entity? parent, int depth, bool familyMember = false, NativeLineDisplay? parentDisplay = null)
         {
             check();
+            var nativeDisplay = ResolveNativeDisplay(original, parentDisplay, geometry);
             if (depth > 64) throw new InvalidDataException("블록 깊이가 안전 범위를 초과했습니다.");
             // An ordinary INSERT is only a transform/property context. Do not deep-clone
             // its entire block before visiting (and cloning) each leaf separately.
@@ -48,6 +50,14 @@ public sealed partial class ManagedDwgProcessor
             if (entity is Insert insert)
             {
                 var sourceInsert = (Insert)original;
+                var family = FamilyInfo(sourceInsert.Block.Name, geometry);
+                if (family is { Processed: true } && clips.Count == 0)
+                {
+                    var clone = (Insert)original.Clone(); InheritDisplay(clone, parent);
+                    var ready = PlaceFamily(clone.Block, new Transform(transform.Matrix * InsertTransform(clone).Matrix));
+                    ready.MatchProperties(clone);
+                    output.Add(ready); return;
+                }
                 bool planarSimpleMirror = Math.Abs(Math.Abs(insert.XScale) - Math.Abs(insert.YScale)) < Epsilon
                     && Math.Abs(Math.Abs(insert.Normal.Z) - 1) < Epsilon
                     && sourceInsert.Block.Entities.All(e => e is Line or Hatch { IsSolid: true });
@@ -66,7 +76,12 @@ public sealed partial class ManagedDwgProcessor
                         preserved = new Insert(wrapper) { SpatialFilter = new SpatialFilter(SpatialFilter.SpatialFilterEntryName)
                         { Origin = XYZ.Zero, Normal = XYZ.AxisZ, DisplayBoundary = true, BoundaryPoints = polygon } };
                     }
-                    target.Entities.Add(preserved);
+                    output.Add(preserved);
+                    if (geometry?.Request.WideLineLayers.Count > 0)
+                    {
+                        string skipped = "전역폭 확인 필요: 비균등·반전·기울어진 보존 블록 내부 선은 원본을 유지했습니다.";
+                        if (!response.Warnings.Contains(skipped)) response.Warnings.Add(skipped);
+                    }
                     string warning = "블록 표현 보존: 비균등 축척·반전·기울어진 블록은 형상 손상을 막기 위해 원래 블록을 유지했습니다.";
                     if (!response.Warnings.Contains(warning)) response.Warnings.Add(warning);
                     return;
@@ -78,7 +93,10 @@ public sealed partial class ManagedDwgProcessor
                     activeClips.Add(filter.BoundaryPoints.Select(p => combined.ApplyTransform(new XYZ(p.X, p.Y, 0)))
                         .Select(p => new XY(p.X, p.Y)).ToList());
                 response.ExplodedInserts++;
-                foreach (Entity child in sourceInsert.Block.GetSortedEntities()) Add(child, combined, activeClips, insert, depth + 1);
+                int familyStart = output.Count;
+                foreach (Entity child in sourceInsert.Block.GetSortedEntities()) Add(child, combined, activeClips, insert, depth + 1, familyMember || family != null, nativeDisplay);
+                if (!familyMember && family is { Processed: false })
+                    GroupFamily(output, familyStart, combined, family, response, geometry!.Request.UseLayerColors);
                 // Attribute positions are already in the enclosing insert's coordinates.
                 foreach (AttributeEntity attribute in sourceInsert.Attributes)
                 {
@@ -94,20 +112,22 @@ public sealed partial class ManagedDwgProcessor
                 entity = AttributeText(definition);
             }
             TransformEditable(entity, transform, ref dimensionIndex);
-            if (clips.Count == 0) { target.Entities.Add(entity); return; }
+            var wide = WidthSource(entity, nativeDisplay, geometry);
+            if (clips.Count == 0) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response)); return; }
             if (entity is Line line)
             {
-                foreach (Line segment in ClipLine(line, clips)) target.Entities.Add(segment);
+                foreach (Line segment in ClipLine(line, clips)) output.Add(MakeWideLine(segment, wide, response.ModelScale, response));
                 return;
             }
             Box bounds = Bounds(entity);
             if (clips.Any(p => Outside(bounds, p))) return;
-            if (clips.All(p => Inside(bounds, p))) { target.Entities.Add(entity); return; }
+            if (clips.All(p => Inside(bounds, p))) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response)); return; }
 
             // A boundary-crossing text, hatch or curved entity must not be dropped or
             // approximated as arbitrary short lines. Retain only this entity's clip,
             // not the entire sheet/view and its unrelated model contents.
             string kind = entity.ObjectName;
+            entity = MakeWideLine(entity, wide, response.ModelScale, response);
             retained[kind] = retained.GetValueOrDefault(kind) + 1;
             foreach (var polygon in clips)
             {
@@ -120,10 +140,11 @@ public sealed partial class ManagedDwgProcessor
                 };
                 response.BoundaryBlocksRetained++;
             }
-            target.Entities.Add(entity);
+            output.Add(entity);
         }
 
         foreach (Entity entity in source.ModelSpace.GetSortedEntities()) Add(entity, initial, new(), null, 0);
+        foreach (var entity in output) target.Entities.Add(entity);
         if (retained.Count > 0)
             response.Warnings.Add("경계 표현 보존: 잘림 경계를 가로지르는 " + string.Join(", ", retained.Select(p => $"{p.Key} {p.Value}개"))
                 + "는 해당 객체만 작은 잘림 블록으로 유지했습니다. 일반 선과 시트 전체는 블록으로 묶지 않습니다.");

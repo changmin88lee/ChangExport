@@ -17,6 +17,31 @@ namespace ChangExport.DwgProcessing
         public List<ColorLayerRemap> ColorRemaps { get; set; } = new();
         public Dictionary<string, string> TextReplacements { get; set; } = new();
         public Dictionary<string, int> ExpectedRuleMatches { get; set; } = new();
+        public List<WideLineLayer> WideLineLayers { get; set; } = new();
+        public List<FamilyBlockSource> FamilySources { get; set; } = new();
+    }
+
+    public sealed class WideLineLayer
+    {
+        public string NativeLayer { get; set; } = "";
+        public string TargetLayer { get; set; } = "";
+        public string StyleName { get; set; } = "";
+    }
+
+    public sealed class FamilyBlockSource
+    {
+        public string Identity { get; set; } = "";
+        public string Label { get; set; } = "";
+        public bool IsTitleBlock { get; set; }
+        public List<string> NativePrefixes { get; set; } = new();
+    }
+
+    public sealed class FamilyBlockInfo
+    {
+        public string Identity { get; set; } = "";
+        public string Label { get; set; } = "";
+        public bool IsTitleBlock { get; set; }
+        public bool Processed { get; set; }
     }
 
     public sealed class ColorLayerRemap
@@ -53,6 +78,13 @@ namespace ChangExport.DwgProcessing
         public Dictionary<string, int> CustomRuleEntityCounts { get; set; } = new();
         public Dictionary<string, double> TimingsMs { get; set; } = new();
         public int NormalizedEntityColors { get; set; }
+        public int WideLineConverted { get; set; }
+        public int WideLineSkipped { get; set; }
+        public Dictionary<string, int> WideLineStyleCounts { get; set; } = new();
+        public Dictionary<string, FamilyBlockInfo> FamilyBlocks { get; set; } = new();
+        public int FamilyBlockReferences { get; set; }
+        public int FamilyBlockDefinitions { get; set; }
+        public Dictionary<string, int> FamilyBlockFallbacks { get; set; } = new();
     }
 
     public sealed class SheetPlacement

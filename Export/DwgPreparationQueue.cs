@@ -23,7 +23,8 @@ internal sealed class DwgPreparationQueue : IDisposable
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) when (input != fallback)
             {
-                var baseline = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = request.UseLayerColors, LayerStyles = request.LayerStyles };
+                var baseline = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = request.UseLayerColors, LayerStyles = request.LayerStyles,
+                    WideLineLayers = request.WideLineLayers, FamilySources = request.FamilySources };
                 var result = processor.Prepare(baseline, fallback, () => _stop.IsCancellationRequested);
                 result.Response.Warnings.Add($"필터 출력 실패: {ex.Message} · 기본 카테고리 DWG로 저장을 계속했습니다.");
                 return result;

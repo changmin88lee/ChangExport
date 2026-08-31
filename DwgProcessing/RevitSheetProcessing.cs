@@ -40,7 +40,7 @@ public sealed partial class ManagedDwgProcessor
 
     private static bool IsEnabledViewport(Viewport v) => v.ActiveStatus != 0 && !v.Status.HasFlag(ViewportStatusFlags.ViewportOff);
 
-    private static void BindReferences(CadDocument source, string path, List<string> warnings, Action check, HashSet<string> chain, Dictionary<string, string> layerNames)
+    private static void BindReferences(CadDocument source, string path, List<string> warnings, Action check, HashSet<string> chain, Dictionary<string, string> layerNames, Action<CadDocument>? prepare = null)
     {
         string fullPath = Path.GetFullPath(path);
         if (chain.Count >= 32 || !chain.Add(fullPath)) throw new InvalidDataException("외부 참조 순환 또는 깊이 초과: " + fullPath);
@@ -58,8 +58,9 @@ public sealed partial class ManagedDwgProcessor
                 if (string.IsNullOrWhiteSpace(raw) || !File.Exists(candidate))
                     throw new FileNotFoundException("외부 참조 DWG를 찾을 수 없습니다: " + raw, candidate);
                 CadDocument reference = Read(candidate, warnings);
+                prepare?.Invoke(reference);
                 var nestedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                BindReferences(reference, candidate, warnings, check, chain, nestedNames);
+                BindReferences(reference, candidate, warnings, check, chain, nestedNames, prepare);
                 string prefix = "CE_X" + ++index + "_";
                 // Honor namespaced host layers, including per-viewport frozen layers.
                 var names = new Dictionary<string, Layer>(StringComparer.OrdinalIgnoreCase);
@@ -173,9 +174,13 @@ public sealed partial class ManagedDwgProcessor
 
     private static int ColorRgb(ACadSharp.Color color) => (color.R << 16) | (color.G << 8) | color.B;
 
-    private static CadDocument ApplyCustomRemaps(CadDocument document, BridgeRequest request, BridgeResponse response)
+    private static CadDocument ApplyCustomRemaps(CadDocument document, BridgeRequest request, BridgeResponse response, GeometryContext? geometry = null)
     {
-        if (request.ColorRemaps.Count == 0 && request.TextReplacements.Count == 0) return document;
+        if (request.ColorRemaps.Count == 0 && request.TextReplacements.Count == 0)
+        {
+            foreach (var entity in document.Entities) CaptureWidths(entity, geometry);
+            return document;
+        }
         var rewritten = CreateOutput(document);
         int blockIndex = 0;
         var mappings = request.ColorRemaps.ToDictionary(m => m.MarkerAci);
@@ -212,7 +217,7 @@ public sealed partial class ManagedDwgProcessor
         }
         foreach (Entity source in document.Entities)
         {
-            var clone = (Entity)source.Clone(); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone);
+            var clone = (Entity)source.Clone(); CaptureWidths(clone, geometry); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone);
         }
         foreach (var map in request.ColorRemaps)
             response.Warnings.Add($"필터 레이어 '{map.Layer}' / ACI {map.Color} · DWG 객체 {counts[map.MarkerAci]:N0}개 반영");

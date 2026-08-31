@@ -24,13 +24,15 @@ public sealed class ExportSettingsForm : Form
     private BindingList<ExportSetChoice> _choices = new();
     private readonly ComboBox _setup;
     private readonly TextBox _folder;
+    private readonly TextBox _wideLineKeyword;
+    public string WideLineKeyword => _wideLineKeyword.Text.Trim();
     public string SelectedSetup => (_setup.SelectedItem as SetupItem)?.Name ?? string.Empty;
     public string OutputFolder => _folder.Text.Trim();
     public IReadOnlyList<SheetSetDefinition> SelectedSets => _choices.Where(s => s.Selected).Select(s => s.Set.Copy()).ToList();
     private sealed record SetupItem(string Name) { public override string ToString() => Name.Length == 0 ? "기본값" : Name; }
 
     public ExportSettingsForm(IReadOnlyList<SheetDescriptor> sheets, IReadOnlyList<SheetSetDefinition> sets,
-        IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets)
+        IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets, string wideLineKeyword = "##")
     {
         _sheets = sheets; _saveSets = saveSets;
         Text = "모형공간 DWG 출력"; ClientSize = new Size(1050, 700); MinimumSize = new Size(900, 590); UiTheme.Apply(this);
@@ -41,7 +43,7 @@ public sealed class ExportSettingsForm : Form
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         title.Controls.Add(UiTheme.Heading("세트별 DWG · 모형공간 출력"));
         title.Controls.Add(UiTheme.Muted("Revit 독립 실행 · 내장 DWG 엔진으로 시트의 도곽/뷰/주석을 모형공간에 배치합니다.")); root.Controls.Add(title);
-        var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 2, Margin = new Padding(0, 14, 0, 8) };
+        var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 3, Margin = new Padding(0, 14, 0, 8) };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         settings.Controls.Add(new Label { Text = "출력 설정", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _setup = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -52,7 +54,11 @@ public sealed class ExportSettingsForm : Form
         settings.Controls.Add(new Label { Text = "출력 폴더", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         _folder = new TextBox { Dock = DockStyle.Fill, Text = defaultFolder }; settings.Controls.Add(_folder, 1, 1);
         var browse = UiTheme.SecondaryButton("찾아보기"); browse.Click += (_, _) => { using var picker = new FolderBrowserDialog { SelectedPath = OutputFolder }; if (picker.ShowDialog(this) == DialogResult.OK) _folder.Text = picker.SelectedPath; }; settings.Controls.Add(browse, 2, 1); root.Controls.Add(settings);
-        var notice = UiTheme.Muted("출력 기준: DWG 2010 · 모형 mm · 시트별 가장 큰 2D 뷰의 축척으로 도곽까지 확대합니다. 혼합 축척은 다른 뷰의 상대 크기를 유지합니다.\n일반 블록은 개별 객체로 출력하며 경계에 걸친 문자·해치·곡선만 잘림 블록을 유지합니다. 원근·음영 뷰는 생략, 이미지는 사각형으로 대체합니다.");
+        settings.Controls.Add(new Label { Text = "전역폭 판별 문자열", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+        _wideLineKeyword = new TextBox { Text = wideLineKeyword, Dock = DockStyle.Fill, MaxLength = 100, AccessibleName = "전역폭 판별 문자열" };
+        settings.Controls.Add(_wideLineKeyword, 1, 2);
+        settings.Controls.Add(UiTheme.Muted("빈 값: 변환 안 함"), 2, 2);
+        var notice = UiTheme.Muted("DWG 2010 · 모형 mm · 가장 큰 2D 뷰의 축척으로 시트를 확대합니다. 혼합 축척은 상대 크기를 유지합니다.\n지정 문자열이 있는 선 스타일: Revit 출력 굵기를 전역폭으로 변환합니다. 문자열은 출력 시 저장됩니다.\n모형 패밀리·도곽은 형상이 같을 때 블록 공유, 벽·바닥·독립 주석은 개별 객체입니다. 원근·음영은 생략, 이미지는 사각형으로 대체합니다.");
         notice.MaximumSize = new Size(980, 0); notice.Margin = new Padding(0, 0, 0, 12); root.Controls.Add(notice);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(ExportSetChoice.Selected), HeaderText = "출력", FillWeight = 40 });

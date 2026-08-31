@@ -45,9 +45,11 @@ public sealed partial class ManagedDwgProcessor
         var response = new BridgeResponse { OutputPath = request.OutputPath };
         var phase = Stopwatch.StartNew();
         CadDocument source = Read(inputDrawing, response.Warnings);
+        var geometry = new GeometryContext(request);
+        TagFamilyBlocks(source, geometry);
         response.TimingsMs["read"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers);
+        BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers, d => TagFamilyBlocks(d, geometry));
         response.TimingsMs["bindReferences"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         if (request.RevitSheet)
         {
@@ -56,13 +58,17 @@ public sealed partial class ManagedDwgProcessor
         }
         CadDocument document = Flatten(source, response.Warnings, Check, request.RevitSheet);
         RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
-        document = ApplyCustomRemaps(document, request, response);
+        document = ApplyCustomRemaps(document, request, response, geometry);
+        RestoreWideLayers(document, geometry);
         ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
             .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         response.TimingsMs["flattenAndLayers"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
-        if (request.RevitSheet) document = EditableModel(document, response, Check);
+        if (request.RevitSheet) document = EditableModel(document, response, Check, geometry: geometry);
         // Marker colors must be consumed by ApplyCustomRemaps before removing overrides.
         if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
+        DeduplicateFamilies(document, response, geometry);
+        if (request.WideLineLayers.Count > 0)
+            response.Warnings.Add($"전역폭: 변환 {response.WideLineConverted:N0}개 · 원본 유지 {response.WideLineSkipped:N0}개 · Revit DWG 원본 선굵기 × 시트 배율 {response.ModelScale:G}");
         response.TimingsMs["editableObjects"] = phase.Elapsed.TotalMilliseconds;
         Check();
         response.ModelEntityCount = document.Entities.Count;
