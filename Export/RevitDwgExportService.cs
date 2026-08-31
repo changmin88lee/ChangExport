@@ -21,6 +21,7 @@ public sealed class RevitDwgExportService
         var result = new ExportRunResult { OutputFolder = outputFolder, WorkFolder = staging };
         using DWGExportOptions options = new RevitLayerMappingService(document).Apply(setupName, layers);
         options.MergedViews = false; // Disable sheet-view/link Xrefs in staging; the saved Revit setup remains unchanged.
+        options.FileVersion = ACADVersion.R2010; // Export-only override; never modify the project's saved setup.
         try
         {
             for (int setIndex = 0; setIndex < sets.Count; setIndex++)
@@ -49,7 +50,7 @@ public sealed class RevitDwgExportService
                         progress($"{set.Name} · {sheet.SheetNumber}\n내장 엔진 모형공간 변환 및 재열기 검사 중");
                         BridgeResponse conversion = processor.Run(new BridgeRequest { Operation = "Flatten", OutputPath = flat },
                             Path.Combine(nativeDirectory, "sheet.dwg"), setFolder, cancel, pump);
-                        item.Warnings.AddRange(conversion.Warnings); flattened.Add(flat);
+                        item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {sheet.SheetNumber}: {w}")); flattened.Add(flat);
                     }
                     CheckCancel(cancel);
                     string finalStage = Path.Combine(setFolder, "merged.dwg");
@@ -73,7 +74,7 @@ public sealed class RevitDwgExportService
             File.WriteAllText(result.ManifestPath, JsonSerializer.Serialize(new
             {
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
-                addinVersion = ProductInfo.Version, exportSetup = setupName, outputSpace = "ModelSpace", units = "Sheet paper millimeters",
+                addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Sheet paper millimeters",
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false, customFiltersApplied = false,
                 requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
             }, new JsonSerializerOptions { WriteIndented = true }));

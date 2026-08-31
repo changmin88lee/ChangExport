@@ -25,7 +25,7 @@ public sealed class ManagedDwgProcessor
         if (request.Operation is not ("Flatten" or "Merge")) throw new ArgumentException("지원하지 않는 DWG 작업입니다.");
         var response = new BridgeResponse { OutputPath = request.OutputPath };
         CadDocument document = request.Operation == "Flatten"
-            ? Flatten(Read(inputDrawing, response.Warnings), Check)
+            ? Flatten(Read(inputDrawing, response.Warnings), response.Warnings, Check)
             : Merge(request, response, Check);
         Check();
         Directory.CreateDirectory(workingDirectory);
@@ -63,7 +63,8 @@ public sealed class ManagedDwgProcessor
         {
             if (e.NotificationType == NotificationType.None) return;
             // Unknown non-graphical metadata (e.g. unused CAD detail-view styles) is
-            // reported. Unknown graphical entities are retained and rejected below.
+            // reported. Graphical entities are checked only when included in output:
+            // contents belonging solely to an omitted viewport must not stop a sheet.
             if (e.NotificationType is NotificationType.Error or NotificationType.NotImplemented or NotificationType.NotSupported)
                 errors.Add(e.Message);
             else if (e.Message.Contains("UnknownNonGraphicalObject", StringComparison.Ordinal)
@@ -86,7 +87,6 @@ public sealed class ManagedDwgProcessor
                 throw new NotSupportedException("외부 참조가 남아 있습니다. 자체 포함 DWG로 출력해야 합니다: " + block.Name);
             foreach (Entity entity in block.Entities)
             {
-                ValidateEntity(entity);
                 SnapshotTextField(entity, warnings);
                 if (entity is Insert insert) foreach (var attribute in insert.Attributes) SnapshotTextField(attribute, warnings);
             }
@@ -125,7 +125,7 @@ public sealed class ManagedDwgProcessor
 
     private static void ValidateEntity(Entity e)
     {
-        if (e is UnknownEntity or ProxyEntity or Solid3D or CadBody or ACadSharp.Entities.Region or RasterImage or PdfUnderlay)
+        if (e is UnknownEntity or ProxyEntity or Solid3D or CadBody or ACadSharp.Entities.Region or PdfUnderlay)
             throw new NotSupportedException($"내장 엔진에서 손실 없는 변환이 확인되지 않은 객체입니다: {e.ObjectName} (레이어 {e.Layer.Name}). 이 세트는 저장하지 않습니다.");
         if (e is Insert i && (i.IsMultiple || i.Block.IsDynamic))
             throw new NotSupportedException("동적/배열 블록은 현재 내장 엔진 변환 대상이 아닙니다: " + i.Block.Name);
@@ -171,7 +171,7 @@ public sealed class ManagedDwgProcessor
     private static object SegmentSignature(LineType.Segment s) =>
         (s.Length, s.Flags, s.Offset, s.Rotation, s.Scale, s.ShapeNumber, s.Text, s.Style?.Filename, s.Style?.BigFontFilename);
 
-    private static CadDocument Flatten(CadDocument source, Action check)
+    private static CadDocument Flatten(CadDocument source, List<string> warnings, Action check)
     {
         var layouts = source.Layouts.Where(l => l.IsPaperSpace && l.AssociatedBlock.Entities.Any(e => e is not Viewport || e is Viewport v && !v.RepresentsPaper)).ToList();
         if (layouts.Count != 1) throw new InvalidDataException("시트 DWG에는 내용이 있는 배치가 정확히 하나 있어야 합니다.");
@@ -184,21 +184,38 @@ public sealed class ManagedDwgProcessor
         };
         CadDocument target = CreateOutput(source);
         var sheet = new BlockRecord("CE_SHEET") { Units = UnitsType.Millimeters };
+        var omitted = new List<Viewport>();
+        bool hasOmittedViews = layout.AssociatedBlock.Entities.OfType<Viewport>().Any(v => IsActiveView(v) && OmitViewport(v));
         int index = 0;
         foreach (Entity entity in layout.AssociatedBlock.GetSortedEntities())
         {
             check();
             if (entity is Viewport viewport)
             {
-                if (viewport.RepresentsPaper || viewport.ActiveStatus == 0 || viewport.Status.HasFlag(ViewportStatusFlags.ViewportOff)) continue;
-                sheet.Entities.Add(ConvertViewport(source, viewport, "CE_VIEW_" + ++index, check));
+                if (!IsActiveView(viewport)) continue;
+                if (OmitViewport(viewport))
+                {
+                    omitted.Add(viewport);
+                    warnings.Add($"생략: 원근·음영 뷰포트 {viewport.Handle:X}. 도곽·주석과 다른 뷰포트의 출력은 계속했습니다.");
+                    continue;
+                }
+                sheet.Entities.Add(ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews));
             }
             else
             {
                 Entity clone = (Entity)entity.Clone();
-                PrepareClone(clone, "CE_PAPER_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>());
+                clone = PrepareClone(clone, "CE_PAPER_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>(), warnings);
                 sheet.Entities.Add(clone);
             }
+        }
+        if (!sheet.Entities.Any(e => !e.IsInvisible && e.Layer.IsOn && !e.Layer.Flags.HasFlag(LayerFlags.Frozen)) && omitted.Count > 0)
+        {
+            // Keep an otherwise empty sheet in the set instead of losing its slot.
+            double left = omitted.Min(v => v.Center.X - v.Width / 2), right = omitted.Max(v => v.Center.X + v.Width / 2);
+            double bottom = omitted.Min(v => v.Center.Y - v.Height / 2), top = omitted.Max(v => v.Center.Y + v.Height / 2);
+            sheet.Entities.Add(new LwPolyline(new[] { new XY(left, bottom), new XY(right, bottom), new XY(right, top), new XY(left, top) }
+                .Select(p => new LwPolyline.Vertex(p))) { IsClosed = true });
+            warnings.Add("대체: 원근·음영 뷰만 있는 시트는 해당 뷰의 범위 사각형으로 세트 내 자리를 유지했습니다.");
         }
         if (sheet.Entities.Count == 0) throw new InvalidDataException("출력할 시트 내용이 없습니다.");
         target.Entities.Add(new Insert(sheet) { XScale = unitScale, YScale = unitScale, ZScale = unitScale });
@@ -206,14 +223,21 @@ public sealed class ManagedDwgProcessor
         return target;
     }
 
-    private static Insert ConvertViewport(CadDocument source, Viewport viewport, string prefix, Action check)
+    private static bool IsActiveView(Viewport viewport) =>
+        !viewport.RepresentsPaper && viewport.ActiveStatus != 0 && !viewport.Status.HasFlag(ViewportStatusFlags.ViewportOff);
+
+    private static bool OmitViewport(Viewport viewport) =>
+        (viewport.Status & (ViewportStatusFlags.PerspectiveMode | ViewportStatusFlags.HidePlotMode)) != 0
+        || viewport.RenderMode is not (RenderMode.Optimized2D or RenderMode.Wireframe)
+        || viewport.ShadePlotMode is ShadePlotMode.Hidden or ShadePlotMode.Rendered;
+
+    private static Insert ConvertViewport(CadDocument source, Viewport viewport, string prefix, List<string> warnings, Action check, bool hasOmittedViews)
     {
         if (!double.IsFinite(viewport.ScaleFactor) || viewport.ScaleFactor <= 0 || viewport.Width <= 0 || viewport.Height <= 0)
             throw new InvalidDataException("뷰포트 크기 또는 축척이 올바르지 않습니다.");
         if (Math.Abs(viewport.ViewDirection.X) > Epsilon || Math.Abs(viewport.ViewDirection.Y) > Epsilon || viewport.ViewDirection.Z <= 0
-            || (viewport.Status & (ViewportStatusFlags.PerspectiveMode | ViewportStatusFlags.FrontClipping | ViewportStatusFlags.BackClipping | ViewportStatusFlags.HidePlotMode)) != 0
-            || viewport.RenderMode is not (RenderMode.Optimized2D or RenderMode.Wireframe))
-            throw new NotSupportedException("원근·음영·3차원 방향 뷰포트는 현재 내장 엔진에서 변환하지 않습니다. 해당 시트의 2D 출력 설정을 확인하세요.");
+            || (viewport.Status & (ViewportStatusFlags.FrontClipping | ViewportStatusFlags.BackClipping)) != 0)
+            throw new NotSupportedException("3차원 방향 또는 앞/뒤 잘림 뷰포트는 현재 내장 엔진에서 변환하지 않습니다. 해당 시트의 2D 출력 설정을 확인하세요.");
         var frozen = viewport.FrozenLayers.Select(l => l.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var block = new BlockRecord(prefix);
         // PSLTSCALE=1 keeps dash lengths in paper units despite the viewport scale.
@@ -222,8 +246,9 @@ public sealed class ManagedDwgProcessor
         {
             check();
             if (frozen.Contains(entity.Layer.Name)) continue;
+            if (OmitModelGeometry(entity, hasOmittedViews, warnings)) continue;
             Entity clone = (Entity)entity.Clone();
-            PrepareClone(clone, prefix + "_", frozen, lineScale, new HashSet<BlockRecord>());
+            clone = PrepareClone(clone, prefix + "_", frozen, lineScale, new HashSet<BlockRecord>(), warnings, hasOmittedViews);
             block.Entities.Add(clone);
         }
         double angle = -viewport.TwistAngle;
@@ -263,29 +288,66 @@ public sealed class ManagedDwgProcessor
         return insert;
     }
 
-    private static void PrepareClone(Entity entity, string prefix, HashSet<string> frozen, double lineScale, HashSet<BlockRecord> visited)
+    private static bool OmitModelGeometry(Entity entity, bool hasOmittedViews, List<string> warnings)
     {
+        // Model space is shared by all viewports. A shaded view's ACIS geometry
+        // must not leak into the writer while copying a remaining 2D viewport.
+        if (!hasOmittedViews || entity is not ModelerGeometry) return false;
+        string warning = $"생략: 원근·음영 뷰와 모형공간을 공유하는 3D 표현 객체 {entity.ObjectName} (레이어 {entity.Layer.Name}). 2D 선·문자 출력은 계속했습니다.";
+        if (!warnings.Contains(warning)) warnings.Add(warning);
+        return true;
+    }
+
+    private static Entity PrepareClone(Entity entity, string prefix, HashSet<string> frozen, double lineScale, HashSet<BlockRecord> visited, List<string> warnings, bool hasOmittedViews = false)
+    {
+        if (entity is RasterImage image)
+        {
+            // IMAGE U/V vectors describe one pixel in WCS, not the full image.
+            // Do not use the SDK image bounds/transform: they ignore these vectors.
+            XYZ origin = image.InsertPoint, u = image.UVector * image.Size.X, v = image.VVector * image.Size.Y;
+            var rectangle = new Polyline3D(new[] { origin, origin + u, origin + u + v, origin + v }, true);
+            rectangle.MatchProperties(image);
+            entity = rectangle;
+            warnings.Add($"대체: 이미지 '{Path.GetFileName(image.Definition.FileName)}' (레이어 {image.Layer.Name})를 전체 이미지 크기·회전의 사각형으로 표시했습니다. 이미지 파일은 필요하지 않습니다.");
+        }
+        ValidateEntity(entity);
         entity.LineTypeScale *= lineScale;
         // Rename detached style clones, never the source document's protected
         // Standard entries. This also preserves per-sheet fonts on merge.
         if (entity is MText mtext && mtext.Style != null) mtext.Style.Name = prefix + mtext.Style.Name;
         if (entity is TextEntity text && text.Style != null) text.Style.Name = prefix + text.Style.Name;
         if (entity is Insert attributed)
-            foreach (AttributeEntity attribute in attributed.Attributes) PrepareClone(attribute, prefix, frozen, lineScale, visited);
+            foreach (AttributeEntity attribute in attributed.Attributes) PrepareClone(attribute, prefix, frozen, lineScale, visited, warnings, hasOmittedViews);
         if (entity is Dimension dimension)
         {
             dimension.Style.Name = prefix + dimension.Style.Name;
             dimension.Style.Style.Name = prefix + dimension.Style.Style.Name;
         }
         BlockRecord? block = entity is Insert insert ? insert.Block : entity is Dimension dim ? dim.Block : null;
-        if (block == null || !visited.Add(block)) return;
+        if (block == null || !visited.Add(block)) return entity;
         block.Name = prefix + block.Name.TrimStart('*');
         block.Flags &= ~BlockTypeFlags.Anonymous;
-        foreach (Entity child in block.Entities.ToArray())
+        var ordered = new List<Entity>();
+        bool replaced = false;
+        foreach (Entity child in block.GetSortedEntities().ToArray())
         {
-            if (frozen.Contains(child.Layer.Name)) block.Entities.Remove(child);
-            else PrepareClone(child, prefix, frozen, lineScale, visited);
+            if (frozen.Contains(child.Layer.Name)) { block.Entities.Remove(child); continue; }
+            if (OmitModelGeometry(child, hasOmittedViews, warnings)) { block.Entities.Remove(child); continue; }
+            Entity prepared = PrepareClone(child, prefix, frozen, lineScale, visited, warnings, hasOmittedViews);
+            if (!ReferenceEquals(child, prepared))
+            {
+                block.Entities.Remove(child); block.Entities.Add(prepared); replaced = true;
+            }
+            ordered.Add(prepared);
         }
+        if (replaced)
+        {
+            // The SDK collection is a HashSet: removal/addition alone does not
+            // preserve draw order. Record it explicitly for image replacements.
+            var order = block.CreateSortEntitiesTable(); order.Clear();
+            for (int n = 0; n < ordered.Count; n++) order.Add(ordered[n], (ulong)n + 1);
+        }
+        return entity;
     }
 
     private static CadDocument Merge(BridgeRequest request, BridgeResponse response, Action check)
@@ -309,7 +371,7 @@ public sealed class ManagedDwgProcessor
             foreach (Entity entity in source.ModelSpace.GetSortedEntities())
             {
                 Entity clone = (Entity)entity.Clone();
-                PrepareClone(clone, "CE_" + (n + 1) + "_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>());
+                clone = PrepareClone(clone, "CE_" + (n + 1) + "_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>(), response.Warnings);
                 block.Entities.Add(clone);
             }
             Box box = Bounds(block.Entities);
@@ -346,7 +408,7 @@ public sealed class ManagedDwgProcessor
         foreach (BlockRecord before in expected.BlockRecords)
         {
             if (!actual.BlockRecords.TryGetValue(before.Name, out BlockRecord after)) throw new InvalidDataException("DWG 블록이 누락되었습니다: " + before.Name);
-            var left = before.Entities.ToArray(); var right = after.Entities.ToArray();
+            var left = before.GetSortedEntities().ToArray(); var right = after.GetSortedEntities().ToArray();
             if (left.Length != right.Length) throw new InvalidDataException("DWG 내부 객체 수가 달라졌습니다: " + before.Name);
             for (int n = 0; n < left.Length; n++)
             {
@@ -355,6 +417,10 @@ public sealed class ManagedDwgProcessor
                 if (!left[n].Color.Equals(right[n].Color) || left[n].LineWeight != right[n].LineWeight
                     || Math.Abs(left[n].LineTypeScale - right[n].LineTypeScale) > Epsilon)
                     throw new InvalidDataException("DWG 객체의 색상·선가중치·선축척이 달라졌습니다.");
+                if (left[n] is Polyline3D outline && (right[n] is not Polyline3D savedOutline
+                    || outline.IsClosed != savedOutline.IsClosed || outline.Vertices.Count != savedOutline.Vertices.Count
+                    || outline.Vertices.Zip(savedOutline.Vertices).Any(pair => pair.First.Location.DistanceFrom(pair.Second.Location) > Epsilon)))
+                    throw new InvalidDataException("DWG 사각형 경계의 좌표 또는 닫힘 상태가 달라졌습니다.");
                 if (left[n] is MText text && (right[n] is not MText savedText || text.Value != savedText.Value || text.Style.Filename != savedText.Style.Filename))
                     throw new InvalidDataException("DWG 여러 줄 문자 또는 글꼴이 달라졌습니다.");
                 if (left[n] is TextEntity single && (right[n] is not TextEntity savedSingle || single.Value != savedSingle.Value || single.Style.Filename != savedSingle.Style.Filename))

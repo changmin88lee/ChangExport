@@ -85,8 +85,7 @@ internal static class DwgRegression
 
         var tilted = Sheet(); tilted.PaperSpace.Entities.OfType<Viewport>().Last().ViewDirection = XYZ.AxisX;
         Reject(tilted, "tilted", "3차원");
-        var perspective = Sheet(); perspective.PaperSpace.Entities.OfType<Viewport>().Last().Status |= ViewportStatusFlags.PerspectiveMode;
-        Reject(perspective, "perspective", "원근");
+        DwgFallbackRegression.Run(output, check, near);
         var curves = Sheet(); var curveVp = curves.PaperSpace.Entities.OfType<Viewport>().Last();
         var circle = new Circle { Center = new XYZ(100, 100, 0), Radius = 10 }; curves.PaperSpace.Entities.Add(circle);
         curveVp.Boundary = circle; curveVp.Status |= ViewportStatusFlags.NonRectangularClipping;
@@ -114,7 +113,7 @@ internal static class DwgRegression
         }
     }
 
-    private static IEnumerable<Entity> Walk(BlockRecord block)
+    internal static IEnumerable<Entity> Walk(BlockRecord block)
     {
         foreach (Entity e in block.Entities)
         {
@@ -125,7 +124,7 @@ internal static class DwgRegression
 
     private static LwPolyline Polygon(params XY[] points) => new(points.Select(p => new LwPolyline.Vertex(p))) { IsClosed = true };
 
-    private static CadDocument Sheet(ACadVersion version = ACadVersion.AC1032)
+    internal static CadDocument Sheet(ACadVersion version = ACadVersion.AC1032)
     {
         var doc = new CadDocument(version);
         doc.Header.CodePage = "ANSI_949"; // Legacy DWGs encode Korean using their declared code page.

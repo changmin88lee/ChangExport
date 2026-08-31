@@ -92,6 +92,11 @@ internal static class Program
         { Render(sets, Path.Combine(output, "sets.png")); sets.Size = sets.MinimumSize; Render(sets, Path.Combine(output, "sets-small.png")); }
         using (var export = new ExportSettingsForm(sheets, grouped, new[] { "", "프로젝트 출력 설정" }, "", output, _ => { }))
         { Render(export, Path.Combine(output, "export.png")); Check(export.SelectedSets.Count == grouped.Count, "Export selects whole sets"); }
+        var exportResult = new ExportRunResult { OutputFolder = output, WorkFolder = output, ManifestPath = "Manifest.json" };
+        var warningItem = new ExportItemResult("구조 세트", "", true, "구조 세트.dwg");
+        warningItem.Warnings.Add("시트 A101: 생략: 원근·음영 뷰포트. 다른 도면은 저장했습니다.");
+        warningItem.Warnings.Add("시트 A102: 대체: 이미지 '로고.png'를 사각형으로 표시했습니다."); exportResult.Items.Add(warningItem);
+        using (var resultForm = new ExportResultForm(exportResult)) Render(resultForm, Path.Combine(output, "result-warnings.png"));
         Check(!File.Exists(Path.Combine(output, "unexpected.json")), "No UI execution side effects");
     }
     private static IEnumerable<Control> Descendants(Control control)

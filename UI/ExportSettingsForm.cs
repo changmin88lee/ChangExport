@@ -52,7 +52,7 @@ public sealed class ExportSettingsForm : Form
         settings.Controls.Add(new Label { Text = "출력 폴더", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         _folder = new TextBox { Dock = DockStyle.Fill, Text = defaultFolder }; settings.Controls.Add(_folder, 1, 1);
         var browse = UiTheme.SecondaryButton("찾아보기"); browse.Click += (_, _) => { using var picker = new FolderBrowserDialog { SelectedPath = OutputFolder }; if (picker.ShowDialog(this) == DialogResult.OK) _folder.Text = picker.SelectedPath; }; settings.Controls.Add(browse, 2, 1); root.Controls.Add(settings);
-        var notice = UiTheme.Muted("출력 기준: 시트 지면 크기(mm), 시트의 상대 축척 유지. 각 뷰의 실물 1:1 변환은 하지 않습니다.\nDWG 2010 이상 · 2D 뷰포트 대상입니다. 원근·음영·지원하지 않는 객체가 있으면 해당 세트는 저장하지 않습니다.");
+        var notice = UiTheme.Muted("출력 기준: DWG 2010 · 시트 지면 크기(mm), 시트의 상대 축척 유지. 각 뷰의 실물 1:1 변환은 하지 않습니다.\n원근·음영 뷰는 생략하고 이미지는 사각형으로 대체하여 나머지 도면과 세트를 저장합니다. 생략·대체 내역은 출력 결과에 표시합니다.");
         notice.MaximumSize = new Size(980, 0); notice.Margin = new Padding(0, 0, 0, 12); root.Controls.Add(notice);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(ExportSetChoice.Selected), HeaderText = "출력", FillWeight = 40 });
