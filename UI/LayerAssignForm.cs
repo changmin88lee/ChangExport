@@ -38,7 +38,7 @@ public sealed class LayerAssignForm : Form
         _searchBox.TextChanged += (_, _) => LoadRows();
         root.Controls.Add(_searchBox);
 
-        root.Controls.Add(UiTheme.Muted("회사 Profile의 Layer 속성을 확인하고 적용할 항목을 선택하세요."));
+        root.Controls.Add(UiTheme.Muted("레이어 설정의 속성을 확인하고 적용할 항목을 선택하세요."));
 
         _grid = UiTheme.Grid();
         _grid.ReadOnly = true;

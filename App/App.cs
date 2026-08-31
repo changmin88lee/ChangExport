@@ -29,7 +29,7 @@ public sealed class App : IExternalApplication
 
         AddButton(exportPanel, "ManageSheets", "시트 세트\n구성", assemblyPath,
             typeof(ManageSheetGroupsCommand), "시트를 선택해 세트를 구성하고 순서와 가로·세로 배치를 설정합니다.");
-        AddButton(exportPanel, "ExportCompanyDwg", "회사 DWG\n출력", assemblyPath,
+        AddButton(exportPanel, "ExportCompanyDwg", "DWG\n출력", assemblyPath,
             typeof(ExportCompanyDwgCommand), "외부 CAD 프로그램 없이 내장 엔진으로 세트별 모형공간 DWG를 출력합니다.");
 
         AddButton(supportPanel, "DwgDiagnostics", "기술\n진단", assemblyPath,

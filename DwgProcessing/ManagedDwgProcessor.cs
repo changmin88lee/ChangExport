@@ -7,6 +7,7 @@ using ACadSharp.Objects;
 using ACadSharp.Tables;
 using ACadSharp.Types.Units;
 using CSMath;
+using System.Diagnostics;
 
 namespace ChangExport.DwgProcessing;
 
@@ -19,7 +20,7 @@ public sealed partial class ManagedDwgProcessor
     public BridgeResponse Run(BridgeRequest request, string inputDrawing, string workingDirectory,
         Func<bool>? cancel = null, Action? pump = null)
     {
-        void Check() { pump?.Invoke(); if (cancel?.Invoke() == true) throw new OperationCanceledException(); }
+        Action Check = CreateCheck(cancel, pump);
         Check();
         if (File.Exists(request.OutputPath)) throw new IOException("기존 DWG는 덮어쓰지 않습니다: " + request.OutputPath);
         if (request.Operation is not ("Flatten" or "Merge")) throw new ArgumentException("지원하지 않는 DWG 작업입니다.");
@@ -27,22 +28,60 @@ public sealed partial class ManagedDwgProcessor
         CadDocument document;
         if (request.Operation == "Flatten")
         {
-            CadDocument source = Read(inputDrawing, response.Warnings);
-            var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers);
-            if (request.RevitSheet)
-            {
-                PrepareRevitSheet(source, response);
-                response.ModelScale = RevitModelScale(source, response.Warnings);
-            }
-            document = Flatten(source, response.Warnings, Check, request.RevitSheet);
-            RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
-            document = ApplyCustomRemaps(document, request, response);
-            ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
-                .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
+            var prepared = Prepare(request, inputDrawing, cancel, pump);
+            return SavePrepared(prepared.Document, prepared.Response, request.OutputPath, workingDirectory, Check);
         }
         else document = Merge(request, response, Check);
         if (request.RevitSheet) document = EditableModel(document, response, Check);
+        return SavePrepared(document, response, request.OutputPath, workingDirectory, Check);
+    }
+
+    public PreparedDrawing Prepare(BridgeRequest request, string inputDrawing, Func<bool>? cancel = null, Action? pump = null)
+    {
+        Action Check = CreateCheck(cancel, pump);
+        Check();
+        var clock = Stopwatch.StartNew();
+        var response = new BridgeResponse { OutputPath = request.OutputPath };
+        var phase = Stopwatch.StartNew();
+        CadDocument source = Read(inputDrawing, response.Warnings);
+        response.TimingsMs["read"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
+        var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers);
+        response.TimingsMs["bindReferences"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
+        if (request.RevitSheet)
+        {
+            PrepareRevitSheet(source, response);
+            response.ModelScale = RevitModelScale(source, response.Warnings);
+        }
+        CadDocument document = Flatten(source, response.Warnings, Check, request.RevitSheet);
+        RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
+        document = ApplyCustomRemaps(document, request, response);
+        ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
+            .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
+        response.TimingsMs["flattenAndLayers"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
+        if (request.RevitSheet) document = EditableModel(document, response, Check);
+        response.TimingsMs["editableObjects"] = phase.Elapsed.TotalMilliseconds;
+        Check();
+        response.ModelEntityCount = document.Entities.Count;
+        response.TimingsMs["prepare"] = clock.Elapsed.TotalMilliseconds;
+        return new PreparedDrawing(document, response, inputDrawing);
+    }
+
+    private static Action CreateCheck(Func<bool>? cancel, Action? pump)
+    {
+        var clock = Stopwatch.StartNew();
+        return () =>
+        {
+            if (pump != null && clock.ElapsedMilliseconds >= 100) { pump(); clock.Restart(); }
+            if (cancel?.Invoke() == true) throw new OperationCanceledException();
+        };
+    }
+
+    private static BridgeResponse SavePrepared(CadDocument document, BridgeResponse response, string outputPath, string workingDirectory, Action Check)
+    {
+        if (File.Exists(outputPath)) throw new IOException("기존 DWG는 덮어쓰지 않습니다: " + outputPath);
+        response.OutputPath = outputPath;
+        var clock = Stopwatch.StartNew();
         Check();
         Directory.CreateDirectory(workingDirectory);
         string temporary = Path.Combine(workingDirectory, "managed_" + Guid.NewGuid().ToString("N") + ".dwg");
@@ -64,7 +103,8 @@ public sealed partial class ManagedDwgProcessor
                 throw new InvalidDataException("모형공간 출력 검사를 통과하지 못했습니다.");
             response.EntityBounds = reopened.Entities.Select(e => ToPlacement(Bounds(e), e.Handle.ToString())).ToList();
             Check();
-            File.Move(temporary, request.OutputPath, false);
+            File.Move(temporary, outputPath, false);
+            response.TimingsMs["writeAndVerify"] = clock.Elapsed.TotalMilliseconds;
             response.Success = true;
             response.Message = "내장 엔진 모형공간 변환 및 DWG 재열기 검사 완료";
             return response;
@@ -203,6 +243,7 @@ public sealed partial class ManagedDwgProcessor
         bool Active(Viewport v) => revitSheet ? IsEnabledViewport(v) : IsActiveView(v);
         bool hasOmittedViews = layout.AssociatedBlock.Entities.OfType<Viewport>().Any(v => Active(v) && OmitViewport(v));
         int index = 0;
+        var lineworkBounds = new Dictionary<Entity, Box?>();
         foreach (Entity entity in layout.AssociatedBlock.GetSortedEntities())
         {
             check();
@@ -215,7 +256,7 @@ public sealed partial class ManagedDwgProcessor
                     warnings.Add($"생략: 원근·음영 뷰포트 {viewport.Handle:X}. 도곽·주석과 다른 뷰포트의 출력은 계속했습니다.");
                     continue;
                 }
-                sheet.Entities.Add(ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews));
+                sheet.Entities.Add(ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews, revitSheet ? lineworkBounds : null));
             }
             else
             {
@@ -247,7 +288,7 @@ public sealed partial class ManagedDwgProcessor
         || viewport.RenderMode is not (RenderMode.Optimized2D or RenderMode.Wireframe)
         || viewport.ShadePlotMode is ShadePlotMode.Hidden or ShadePlotMode.Rendered;
 
-    private static Insert ConvertViewport(CadDocument source, Viewport viewport, string prefix, List<string> warnings, Action check, bool hasOmittedViews)
+    private static Insert ConvertViewport(CadDocument source, Viewport viewport, string prefix, List<string> warnings, Action check, bool hasOmittedViews, Dictionary<Entity, Box?>? lineworkBounds = null)
     {
         if (!double.IsFinite(viewport.ScaleFactor) || viewport.ScaleFactor <= 0 || viewport.Width <= 0 || viewport.Height <= 0)
             throw new InvalidDataException("뷰포트 크기 또는 축척이 올바르지 않습니다.");
@@ -263,6 +304,7 @@ public sealed partial class ManagedDwgProcessor
             check();
             if (frozen.Contains(entity.Layer.Name)) continue;
             if (OmitModelGeometry(entity, hasOmittedViews, warnings)) continue;
+            if (lineworkBounds != null && OutsideViewportLinework(entity, viewport, lineworkBounds)) continue;
             Entity clone = (Entity)entity.Clone();
             clone = PrepareClone(clone, prefix + "_", frozen, lineScale, new HashSet<BlockRecord>(), warnings, hasOmittedViews);
             block.Entities.Add(clone);
@@ -366,7 +408,7 @@ public sealed partial class ManagedDwgProcessor
         return entity;
     }
 
-    private static CadDocument Merge(BridgeRequest request, BridgeResponse response, Action check)
+    private static CadDocument Merge(BridgeRequest request, BridgeResponse response, Action check, IReadOnlyList<PreparedDrawing>? prepared = null)
     {
         if (request.Inputs.Count == 0) throw new InvalidDataException("세트에 시트가 없습니다.");
         if (request.Direction is not ("Horizontal" or "Vertical") || !double.IsFinite(request.MarginMm) || request.MarginMm < 0)
@@ -376,7 +418,7 @@ public sealed partial class ManagedDwgProcessor
         for (int n = 0; n < request.Inputs.Count; n++)
         {
             check();
-            CadDocument source = Read(request.Inputs[n], response.Warnings);
+            CadDocument source = prepared == null ? Read(request.Inputs[n], response.Warnings) : prepared[n].Document;
             if (request.RevitSheet && target != null) IsolateConflictingStyles(source, target, n + 1, response.Warnings);
             if (source.Header.InsUnits != UnitsType.Millimeters || source.Layouts.Where(l => l.IsPaperSpace).Any(l => l.AssociatedBlock.Entities.Any(e => e is not Viewport)))
                 throw new InvalidDataException("병합 입력은 mm 단위의 모형공간 시트여야 합니다.");
@@ -385,8 +427,10 @@ public sealed partial class ManagedDwgProcessor
             if (target.Header.Version != source.Header.Version || Math.Abs(target.Header.LineTypeScale - source.Header.LineTypeScale) > Epsilon)
                 throw new InvalidDataException("서로 다른 DWG 버전/전역 선축척을 가진 시트는 병합할 수 없습니다.");
             var block = new BlockRecord("CE_SET_" + (n + 1)) { Units = UnitsType.Millimeters };
-            foreach (Entity entity in source.ModelSpace.GetSortedEntities())
+            foreach (Entity entity in source.ModelSpace.GetSortedEntities().ToArray())
             {
+                // Clone final leaf objects; removing them individually from an attached
+                // DWG document triggers expensive SDK ownership updates.
                 Entity clone = (Entity)entity.Clone();
                 clone = PrepareClone(clone, "CE_" + (n + 1) + "_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>(), response.Warnings);
                 block.Entities.Add(clone);

@@ -27,7 +27,7 @@ public sealed class ExportSettingsForm : Form
     public string SelectedSetup => (_setup.SelectedItem as SetupItem)?.Name ?? string.Empty;
     public string OutputFolder => _folder.Text.Trim();
     public IReadOnlyList<SheetSetDefinition> SelectedSets => _choices.Where(s => s.Selected).Select(s => s.Set.Copy()).ToList();
-    private sealed record SetupItem(string Name) { public override string ToString() => Name.Length == 0 ? "Revit 기본값" : Name; }
+    private sealed record SetupItem(string Name) { public override string ToString() => Name.Length == 0 ? "기본값" : Name; }
 
     public ExportSettingsForm(IReadOnlyList<SheetDescriptor> sheets, IReadOnlyList<SheetSetDefinition> sets,
         IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets)
@@ -43,7 +43,7 @@ public sealed class ExportSettingsForm : Form
         title.Controls.Add(UiTheme.Muted("Revit 독립 실행 · 내장 DWG 엔진으로 시트의 도곽/뷰/주석을 모형공간에 배치합니다.")); root.Controls.Add(title);
         var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 2, Margin = new Padding(0, 14, 0, 8) };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        settings.Controls.Add(new Label { Text = "Revit 출력 설정", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        settings.Controls.Add(new Label { Text = "출력 설정", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         _setup = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         foreach (string setup in setups) _setup.Items.Add(new SetupItem(setup));
         _setup.SelectedItem = _setup.Items.Cast<SetupItem>().FirstOrDefault(s => s.Name == selectedSetup) ?? _setup.Items[0];

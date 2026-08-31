@@ -30,7 +30,7 @@ public sealed class CadStandardRepository
         EnsureDefaultProfile();
         string json = File.ReadAllText(ActiveProfilePath);
         return JsonSerializer.Deserialize<CadStandardProfile>(json, JsonOptions)
-            ?? throw new InvalidDataException("회사 CAD Profile을 읽을 수 없습니다.");
+            ?? throw new InvalidDataException("레이어 설정을 읽을 수 없습니다.");
     }
 
     public void SaveActive(CadStandardProfile profile)

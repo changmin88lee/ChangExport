@@ -49,6 +49,7 @@ namespace ChangExport.DwgProcessing
         public int ExplodedInserts { get; set; }
         public int BoundaryBlocksRetained { get; set; }
         public Dictionary<string, int> CustomRuleEntityCounts { get; set; } = new();
+        public Dictionary<string, double> TimingsMs { get; set; } = new();
     }
 
     public sealed class SheetPlacement

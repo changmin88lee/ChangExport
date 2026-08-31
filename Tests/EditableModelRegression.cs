@@ -58,8 +58,10 @@ internal static class EditableModelRegression
         foreach (double gap in new[] { 0d, 5000d })
         {
             string path = Path.Combine(output, $"mixed-set-{direction}-{gap}.dwg");
-            var result = processor.Run(new BridgeRequest { Operation = "Merge", RevitSheet = true, Inputs = new() { first, second },
-                OutputPath = path, Direction = direction, MarginMm = gap }, first, output);
+            var memoryInputs = new[] { "scale100-native.dwg", "scale200-native.dwg" }.Select(name => processor.Prepare(
+                new BridgeRequest { RevitSheet = true }, Path.Combine(output, name))).ToList();
+            var result = processor.MergePrepared(new BridgeRequest { Operation = "Merge", RevitSheet = true,
+                OutputPath = path, Direction = direction, MarginMm = gap }, memoryInputs, output);
             var doc = DwgReader.Read(path);
             check(!doc.Entities.OfType<Insert>().Any(), "Merged set has no sheet container blocks");
             near(result.Placements[0].Width, 42000, "First sheet keeps 100-scale frame after merge");

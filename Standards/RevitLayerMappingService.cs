@@ -7,76 +7,64 @@ namespace ChangExport.Standards;
 public sealed class RevitLayerMappingService
 {
     private readonly Document _document;
+    private List<RevitLayerRow>? _catalog;
     public RevitLayerMappingService(Document document) => _document = document;
-    public IReadOnlyList<string> SetupNames => new[] { string.Empty }
-        .Concat(BaseExportOptions.GetPredefinedSetupNames(_document)).ToList();
+    public static IReadOnlyList<string> SetupNames(RevitExportConfiguration config) => new[] { string.Empty }
+        .Concat(config.OutputSetups.Select(s => s.SetupName).Where(n => n.Length > 0)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-    public DWGExportOptions CreateOptions(string setupName) => string.IsNullOrEmpty(setupName)
-        ? new DWGExportOptions()
-        : DWGExportOptions.GetPredefinedOptions(_document, setupName);
+    public DWGExportOptions CreateOptions(string setupName) => new() { LayerMapping = "AIA" };
 
     public List<RevitLayerRow> Read(string setupName, RevitExportConfiguration config)
     {
-        using DWGExportOptions options = CreateOptions(setupName);
-        using ExportLayerTable table = options.GetExportLayerTable();
+        _catalog ??= RevitCategoryCatalog.Read(_document);
+        var savedRows = config.OutputSetups.FirstOrDefault(s => s.SetupName == setupName)?.Layers ?? new();
+        return MergeCatalog(_catalog, savedRows);
+    }
+
+    public static List<RevitLayerRow> MergeCatalog(IEnumerable<RevitLayerRow> catalog, IReadOnlyList<RevitLayerRow> savedRows)
+    {
         var rows = new List<RevitLayerRow>();
-        var savedRows = config.Setups.FirstOrDefault(s => s.SetupName == setupName)?.Layers ?? new List<RevitLayerRow>();
-        var saved = savedRows.ToDictionary(r => r.Key);
-        foreach (var pair in table)
+        var used = new HashSet<string>();
+        var byKey = savedRows.Where(r => !r.IsCustom).ToDictionary(r => r.Key);
+        var byCategory = savedRows.Where(r => !r.IsCustom && r.CategoryId < 0 && r.Subcategory.Length == 0)
+            .GroupBy(r => (r.CategoryId, r.SpecialType)).ToDictionary(g => g.Key, g => g.First());
+        foreach (var baseline in catalog)
         {
-            ExportLayerKey key = pair.Key;
-            ExportLayerInfo value = pair.Value;
-            // Revit explicitly marks import-file categories. Do not guess from a .dwg suffix,
-            // or confuse the export table's native model/annotation categories with CAD layers.
-            if (value.CategoryType is LayerCategoryType.Imported or LayerCategoryType.Modifier) continue;
-            var row = new RevitLayerRow
+            var edit = byKey.GetValueOrDefault(baseline.Key)
+                ?? (baseline.Subcategory.Length == 0 ? byCategory.GetValueOrDefault((baseline.CategoryId, baseline.SpecialType)) : null);
+            var row = baseline.Copy();
+            if (edit != null)
             {
-                Category = key.CategoryName, Subcategory = key.SubCategoryName, SpecialType = (int)key.SpecialType,
-                CategoryGroup = value.CategoryType.ToString(),
-                Layer = value.LayerName, Color = value.ColorNumber, CutLayer = value.CutLayerName, CutColor = value.CutColorNumber,
-                OriginalLayer = value.LayerName, OriginalColor = value.ColorNumber,
-                OriginalCutLayer = value.CutLayerName, OriginalCutColor = value.CutColorNumber
-            };
-            if (saved.TryGetValue(row.Key, out RevitLayerRow? edit))
-            {
-                if (edit.Layer != edit.OriginalLayer) row.Layer = edit.Layer;
-                if (edit.Color != edit.OriginalColor) row.Color = edit.Color;
-                if (edit.CutLayer != edit.OriginalCutLayer) row.CutLayer = edit.CutLayer;
-                if (edit.CutColor != edit.OriginalCutColor) row.CutColor = edit.CutColor;
-                row.Linetype = edit.Linetype;
-                row.Lineweight = edit.Lineweight;
+                row.Layer = edit.Layer; row.Color = edit.Color; row.CutLayer = edit.CutLayer; row.CutColor = edit.CutColor;
+                row.Linetype = edit.Linetype; row.Lineweight = edit.Lineweight; used.Add(edit.Key);
             }
             rows.Add(row);
         }
-        var ordered = rows.OrderBy(r => r.Category, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(r => r.Subcategory.Length == 0 ? 0 : 1)
-            .ThenBy(r => r.Subcategory, StringComparer.CurrentCultureIgnoreCase).ThenBy(r => r.SpecialType).ToList();
-        var result = new List<RevitLayerRow>();
-        foreach (var group in ordered.GroupBy(r => r.Category))
-        {
-            var parent = group.FirstOrDefault(r => r.Subcategory.Length == 0);
-            if (parent != null) result.Add(parent);
-            result.AddRange(savedRows.Where(r => r.IsCustom && r.Category == group.Key).Select(r => r.Copy()));
-            result.AddRange(group.Where(r => r != parent));
-        }
-        return result;
+        rows.AddRange(savedRows.Where(r => !used.Contains(r.Key) && r.CategoryGroup is not ("Imported" or "Modifier")).Select(r => r.Copy()));
+        return RevitCategoryCatalog.Order(rows);
     }
 
     public DWGExportOptions Apply(string setupName, IReadOnlyList<RevitLayerRow> rows)
     {
+        new OutputSetupFile { Name = setupName.Length == 0 ? "기본값" : setupName, Layers = rows.ToList() }.Validate();
         IReadOnlyList<string> issues = Validate(rows);
         if (issues.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, issues.Take(12)));
         DWGExportOptions options = CreateOptions(setupName);
         using ExportLayerTable table = options.GetExportLayerTable();
-        foreach (RevitLayerRow row in rows.Where(r => r.HasChanges && !r.IsCustom))
+        foreach (RevitLayerRow row in rows.Where(r => !r.IsCustom))
         {
             using var key = new ExportLayerKey(row.Category, row.Subcategory, (SpecialType)row.SpecialType);
-            ExportLayerInfo value = table[key];
+            bool exists = table.ContainsKey(key);
+            using ExportLayerInfo value = exists ? table[key] : new ExportLayerInfo();
+            value.CategoryType = Enum.TryParse<LayerCategoryType>(row.CategoryGroup, out var group) ? group : LayerCategoryType.Model;
             value.LayerName = row.Layer;
             value.ColorNumber = row.Color;
             value.CutLayerName = row.CutLayer;
             value.CutColorNumber = row.CutColor;
-            table[key] = value;
+            using var modifier = new LayerModifier(ModifierType.Category, "");
+            value.SetLayerModifiers(new List<LayerModifier> { modifier });
+            value.SetCutLayerModifiers(new List<LayerModifier> { modifier });
+            if (exists) table[key] = value; else table.Add(key, value);
         }
         options.SetExportLayerTable(table);
         return options;

@@ -22,8 +22,10 @@ internal static class TemporaryFilterExport
     {
         var result = new Result();
         if (options.PropOverrides == PropOverrideMode.ByLayer)
-            throw new InvalidOperationException("선택한 Revit 출력 설정이 객체 재지정을 제외합니다. 필터에는 재지정 BYENTITY 또는 재지정별 새 레이어 설정이 필요합니다. 임의로 기본 도면 표현을 바꾸지 않았습니다.");
+            throw new InvalidOperationException("출력 옵션이 객체 재지정을 제외하여 필터를 반영할 수 없습니다. 기본 도면 표현은 유지했습니다.");
         var rules = rows.Where(r => r.IsCustom).ToList();
+        var ruleIndex = new TypeRuleIndex(rules);
+        var typeNames = new Dictionary<ElementId, string>();
         var used = ManagedDwgProcessor.UsedColorIndices(Directory.GetFiles(baselineDirectory, "*.dwg"));
         used.UnionWith(rows.SelectMany(r => new[] { r.Color, r.CutColor }).Where(i => i is >= 1 and <= 255));
         int Rgb(int index) { var c = new ACadSharp.Color((short)index); return (c.R << 16) | (c.G << 8) | c.B; }
@@ -88,9 +90,10 @@ internal static class TemporaryFilterExport
                     document.Regenerate();
                     foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
                     {
-                        if (element is ImportInstance || element.Category == null) continue;
-                        string typeName = document.GetElement(element.GetTypeId())?.Name ?? "";
-                        var rule = rules.FirstOrDefault(r => r.Matches(element.Category.Name, typeName));
+                        if (element is ImportInstance || element.Category == null || !ruleIndex.HasCategory(element.Category.Name)) continue;
+                        ElementId typeId = element.GetTypeId();
+                        if (!typeNames.TryGetValue(typeId, out string? typeName)) typeNames[typeId] = typeName = document.GetElement(typeId)?.Name ?? "";
+                        var rule = ruleIndex.Match(element.Category.Name, typeName);
                         if (rule == null) continue;
                         var marker = markers[rule.RuleId];
                         using var settings = view.GetElementOverrides(element.Id);

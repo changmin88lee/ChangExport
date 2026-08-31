@@ -29,28 +29,33 @@ public sealed partial class ManagedDwgProcessor
 
     // Work on detached clones only. The source RVT, staging DWGs and existing outputs
     // are never edited. Dimensions keep their native entity and display definition.
-    private static CadDocument EditableModel(CadDocument source, BridgeResponse response, Action check)
+    private static CadDocument EditableModel(CadDocument source, BridgeResponse response, Action check, Transform? placement = null)
     {
         var target = CreateOutput(source);
         int dimensionIndex = 0, clipIndex = 0;
         var retained = new Dictionary<string, int>();
-        var initial = Transform.CreateScaling(new XYZ(response.ModelScale));
+        var initial = placement ?? Transform.CreateScaling(new XYZ(response.ModelScale));
 
         void Add(Entity original, Transform transform, List<List<XY>> clips, Entity? parent, int depth)
         {
             check();
             if (depth > 64) throw new InvalidDataException("블록 깊이가 안전 범위를 초과했습니다.");
-            Entity entity = (Entity)original.Clone();
+            // An ordinary INSERT is only a transform/property context. Do not deep-clone
+            // its entire block before visiting (and cloning) each leaf separately.
+            Entity entity = original is Insert context ? InsertContext(context) : (Entity)original.Clone();
             InheritDisplay(entity, parent);
             if (entity.IsInvisible || !entity.Layer.IsOn || entity.Layer.Flags.HasFlag(LayerFlags.Frozen)) return;
             if (entity is Insert insert)
             {
+                var sourceInsert = (Insert)original;
                 bool planarSimpleMirror = Math.Abs(Math.Abs(insert.XScale) - Math.Abs(insert.YScale)) < Epsilon
                     && Math.Abs(Math.Abs(insert.Normal.Z) - 1) < Epsilon
-                    && insert.Block.Entities.All(e => e is Line or Hatch { IsSolid: true });
+                    && sourceInsert.Block.Entities.All(e => e is Line or Hatch { IsSolid: true });
                 if (!planarSimpleMirror && (Math.Abs(insert.XScale - insert.YScale) > Epsilon || insert.XScale <= 0 || insert.YScale <= 0
                     || insert.Normal.DistanceFrom(XYZ.AxisZ) > Epsilon))
                 {
+                    insert = (Insert)original.Clone();
+                    InheritDisplay(insert, parent);
                     // Nonuniform/mirrored/tilted block transforms can turn circles into
                     // ellipses or shear nested geometry. Keep only this exceptional block.
                     insert.ApplyTransform(transform);
@@ -73,12 +78,12 @@ public sealed partial class ManagedDwgProcessor
                     activeClips.Add(filter.BoundaryPoints.Select(p => combined.ApplyTransform(new XYZ(p.X, p.Y, 0)))
                         .Select(p => new XY(p.X, p.Y)).ToList());
                 response.ExplodedInserts++;
-                foreach (Entity child in insert.Block.GetSortedEntities()) Add(child, combined, activeClips, insert, depth + 1);
+                foreach (Entity child in sourceInsert.Block.GetSortedEntities()) Add(child, combined, activeClips, insert, depth + 1);
                 // Attribute positions are already in the enclosing insert's coordinates.
-                foreach (AttributeEntity attribute in insert.Attributes)
+                foreach (AttributeEntity attribute in sourceInsert.Attributes)
                 {
                     if (attribute.Flags.HasFlag(AttributeFlags.Hidden)) continue;
-                    if (insert.Block.Entities.OfType<AttributeDefinition>().Any(d => d.Tag == attribute.Tag && d.Flags.HasFlag(AttributeFlags.Constant))) continue;
+                    if (sourceInsert.Block.Entities.OfType<AttributeDefinition>().Any(d => d.Tag == attribute.Tag && d.Flags.HasFlag(AttributeFlags.Constant))) continue;
                     Add(AttributeText(attribute), transform, activeClips, insert, depth + 1);
                 }
                 return;
@@ -124,6 +129,16 @@ public sealed partial class ManagedDwgProcessor
                 + "는 해당 객체만 작은 잘림 블록으로 유지했습니다. 일반 선과 시트 전체는 블록으로 묶지 않습니다.");
         SetExtents(target);
         return target;
+    }
+
+    private static Insert InsertContext(Insert source)
+    {
+        var frame = new BlockRecord("CE_CONTEXT"); frame.BlockEntity.BasePoint = source.Block.BlockEntity.BasePoint;
+        var result = new Insert(frame) { InsertPoint = source.InsertPoint, Normal = source.Normal,
+            XScale = source.XScale, YScale = source.YScale, ZScale = source.ZScale, Rotation = source.Rotation };
+        result.MatchProperties(source);
+        if (source.SpatialFilter is { } filter) result.SpatialFilter = (SpatialFilter)filter.Clone();
+        return result;
     }
 
     private static Transform InsertTransform(Insert insert)

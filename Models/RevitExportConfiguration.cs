@@ -5,6 +5,9 @@ public sealed class RevitExportConfiguration
     public int SchemaVersion { get; set; } = 2;
     public string SelectedSetup { get; set; } = string.Empty;
     public List<ExportSetupEdits> Setups { get; set; } = new();
+    // Old Revit setup edits remain in Setups for preservation; they are not auto-imported.
+    public string SelectedOutputSetup { get; set; } = string.Empty;
+    public List<ExportSetupEdits> OutputSetups { get; set; } = new() { new() };
     public List<SheetSetDefinition> SheetSets { get; set; } = new();
 }
 
@@ -16,18 +19,20 @@ public sealed class ExportSetupEdits
 
 public sealed class RevitLayerRow
 {
+    public long? CategoryId { get; set; }
+    public long? SubcategoryId { get; set; }
     public bool IsCustom { get; set; }
     public string RuleId { get; set; } = string.Empty;
     public string TypeNameContains { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public string Subcategory { get; set; } = string.Empty;
-    public int SpecialType { get; set; }
+    public int SpecialType { get; set; } = -1;
     public string CategoryGroup { get; set; } = string.Empty;
     public string Layer { get; set; } = string.Empty;
     public int Color { get; set; }
     public string CutLayer { get; set; } = string.Empty;
     public int CutColor { get; set; }
-    // Null means inherit the current Revit setup; changes are stored separately from the source setup.
+    // Baseline values belong to the independent ChangExport catalog.
     public string? OriginalLayer { get; set; }
     public int? OriginalColor { get; set; }
     public string? OriginalCutLayer { get; set; }

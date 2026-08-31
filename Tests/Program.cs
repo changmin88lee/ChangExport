@@ -29,6 +29,8 @@ internal static class Program
             if (args.Length > 0 && args[0] == "dwg")
             { IndependentDwg(output, args[2]); CustomLayerRegression.Run(output, Check); RevitSheetRegression.Run(output, Check, Near); }
             else if (args.Length > 0 && args[0] == "editable") { RevitSheetRegression.Run(output, Check, Near); EditableModelRegression.Run(output, Check, Near); }
+            else if (args.Length > 0 && args[0] == "performance") { PerformanceRegression.Run(output, args[2], args[3], Check); PreparationQueueRegression.Run(args[2], Check); }
+            else if (args.Length > 0 && args[0] == "compare-real") PerformanceRegression.CompareRuns(args[2], args[3], Check);
             else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));
@@ -105,6 +107,7 @@ internal static class Program
 
         Application.SetHighDpiMode(HighDpiMode.SystemAware); Application.EnableVisualStyles();
         SpacingRegression.Run(output, Check, Render);
+        OutputSetupRegression.Run(output, Check);
         var uiRows = Enumerable.Range(0, 45).Select(i => new RevitLayerRow { Category = i < 15 ? "구조 기둥" : i < 30 ? "벽" : "주석",
             Subcategory = i % 15 == 0 ? "" : "하위 항목 " + i, Layer = "S-COL-" + i, OriginalLayer = "S-COL-" + i,
             CutLayer = "S-CUT-" + i, OriginalCutLayer = "S-CUT-" + i, Color = i + 1, OriginalColor = i + 1, CutColor = 7, OriginalCutColor = 7 }).ToList();
@@ -120,7 +123,7 @@ internal static class Program
             Check(custom.IsCustom && grid.RowCount == 46 && custom.Caption.StartsWith("    └"), "Custom row nested under selected category");
             grid.EndEdit(); custom.TypeNameContains = "RC"; custom.Layer = "S-RC"; custom.CutLayer = "S-RC-CUT";
             typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
-            Check(store.Load().Setups.SelectMany(s => s.Layers).Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
+            Check(store.Load().OutputSetups.SelectMany(s => s.Layers).Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
             Render(layers, Path.Combine(output, "layers-filter.png"));
             layers.Size = layers.MinimumSize; Render(layers, Path.Combine(output, "layers-small.png"));
         }

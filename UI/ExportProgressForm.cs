@@ -7,7 +7,8 @@ namespace ChangExport.UI;
 public sealed class ExportProgressForm : Form
 {
     private readonly Label _status;
-    private bool _cancel, _finished;
+    private volatile bool _cancel;
+    private bool _finished;
     public ExportRunResult? Result { get; private set; }
     public Exception? Failure { get; private set; }
     public ExportProgressForm(Func<Action<string>, Func<bool>, Action, ExportRunResult> work)

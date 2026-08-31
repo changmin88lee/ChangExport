@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using Autodesk.Revit.DB;
 using ChangExport.App;
 using ChangExport.DwgProcessing;
@@ -37,7 +38,7 @@ public sealed class RevitDwgExportService
                     if (set.SheetUniqueIds.Count == 0 || set.SheetUniqueIds.Distinct().Count() != set.SheetUniqueIds.Count)
                         throw new InvalidDataException("비어 있거나 중복 시트가 있는 세트입니다.");
                     string setFolder = Path.Combine(staging, $"set_{setIndex + 1:000}"); Directory.CreateDirectory(setFolder);
-                    var flattened = new List<string>();
+                    using var preparedQueue = new DwgPreparationQueue(cancel, pump);
                     for (int sheetIndex = 0; sheetIndex < set.SheetUniqueIds.Count; sheetIndex++)
                     {
                         CheckCancel(cancel);
@@ -52,7 +53,9 @@ public sealed class RevitDwgExportService
                         item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, sheetUniqueId = sheet.UniqueId, placedViews, schedules,
                             outlineFeet = new { minU = sheet.Outline.Min.U, minV = sheet.Outline.Min.V, maxU = sheet.Outline.Max.U, maxV = sheet.Outline.Max.V } });
                         progress($"{setIndex + 1}/{sets.Count} 세트 · {set.Name}\n{sheetIndex + 1}/{set.SheetUniqueIds.Count} 시트 · {sheet.SheetNumber} · Revit DWG 생성");
+                        var nativeClock = Stopwatch.StartNew();
                         bool success = document.Export(nativeDirectory, "sheet", new List<ElementId> { sheet.Id }, options);
+                        item.TimingsMs[$"{sheet.SheetNumber}:native"] = nativeClock.Elapsed.TotalMilliseconds;
                         if (!success || !File.Exists(Path.Combine(nativeDirectory, "sheet.dwg"))) throw new IOException("Revit이 시트 DWG를 생성하지 못했습니다.");
                         CheckCancel(cancel);
                         var request = new BridgeRequest { Operation = "Flatten", RevitSheet = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) };
@@ -63,9 +66,11 @@ public sealed class RevitDwgExportService
                             progress($"{set.Name} · {sheet.SheetNumber}\n독립 복제 뷰에서 유형 이름 필터 적용 중");
                             try
                             {
+                                var filterClock = Stopwatch.StartNew();
                                 var filtered = TemporaryFilterExport.Export(document, sheet, options, layers, nativeDirectory,
                                     Path.Combine(setFolder, $"filtered_{sheetIndex + 1:000}"), item.Warnings, cancel);
                                 input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList(); request.TextReplacements = new(filtered.TextReplacements);
+                                item.TimingsMs[$"{sheet.SheetNumber}:filter"] = filterClock.Elapsed.TotalMilliseconds;
                                 request.ExpectedRuleMatches = new(filtered.MatchedElements);
                                 item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterMatches = filtered.MatchedElements, filterRemaps = filtered.Remaps });
                             }
@@ -79,35 +84,29 @@ public sealed class RevitDwgExportService
                                 item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterError = ex.ToString() });
                             }
                         }
-                        string flat = Path.Combine(setFolder, $"flat_{sheetIndex + 1:000}.dwg");
                         stage = $"{sheet.SheetNumber}: 참조 결합·모형공간 변환";
-                        progress($"{set.Name} · {sheet.SheetNumber}\n내장 엔진 모형공간 변환 및 재열기 검사 중");
-                        request.OutputPath = flat;
-                        BridgeResponse conversion;
-                        try { conversion = processor.Run(request, input, setFolder, cancel, pump); }
-                        catch (OperationCanceledException) { throw; }
-                        catch (Exception ex) when (input != Path.Combine(nativeDirectory, "sheet.dwg"))
-                        {
-                            item.Warnings.Add($"필터 출력 실패: {ex.Message} · 기본 카테고리 DWG로 저장을 계속했습니다.");
-                            item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filteredDwgError = ex.ToString() });
-                            request.ColorRemaps.Clear(); request.TextReplacements.Clear(); request.ExpectedRuleMatches.Clear();
-                            input = Path.Combine(nativeDirectory, "sheet.dwg");
-                            conversion = processor.Run(request, input, setFolder, cancel, pump);
-                        }
-                        item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, input, nativeFiles = Directory.GetFiles(nativeDirectory).Select(Path.GetFileName),
-                            conversion.ConvertedViewports, conversion.CustomRuleEntityCounts, conversion.ModelScale,
-                            conversion.ExplodedInserts, conversion.BoundaryBlocksRetained });
+                        progress($"{set.Name} · {sheet.SheetNumber}\n내장 엔진 모형공간 변환 중 · 최종 저장 시 재열기 검사");
+                        preparedQueue.Enqueue(sheet.SheetNumber, request, input, Path.Combine(nativeDirectory, "sheet.dwg"));
                         if (placedViews.Count > 0 && Directory.GetFiles(nativeDirectory, "*.dwg").Length == 1)
                             item.Warnings.Add($"도면 내용 확인: 시트 {sheet.SheetNumber}의 배치 뷰는 {placedViews.Count}개지만 별도 뷰 DWG가 없습니다. 도곽만 생성된 경우를 포함하여 원본 시트와 비교하세요. 파일 저장과 내용 완전성은 별도입니다.");
-                        item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {sheet.SheetNumber}: {w}")); flattened.Add(flat);
+                    }
+                    var prepared = preparedQueue.Finish();
+                    foreach (var entry in prepared)
+                    {
+                        var conversion = entry.Drawing.Response;
+                        item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
+                            conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained });
+                        item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {entry.Sheet}: {w}"));
+                        foreach (var timing in conversion.TimingsMs) item.TimingsMs[$"{entry.Sheet}:{timing.Key}"] = timing.Value;
                     }
                     CheckCancel(cancel);
                     string finalStage = Path.Combine(setFolder, "merged.dwg");
                     stage = "세트 모형공간 배치";
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
-                    var merged = processor.Run(new BridgeRequest { Operation = "Merge", Inputs = flattened, OutputPath = finalStage,
+                    var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
                         Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) },
-                        flattened[0], setFolder, cancel, pump);
+                        prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
+                    foreach (var timing in merged.TimingsMs) item.TimingsMs[timing.Key] = timing.Value;
                     CheckCancel(cancel);
                     string destination = PublishUnique(finalStage, outputFolder, set.Name);
                     item.Success = true; item.Message = destination; item.Placements = merged.Placements;
@@ -126,6 +125,7 @@ public sealed class RevitDwgExportService
             {
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
                 addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Model millimeters; sheet scaled by largest 2D viewport denominator",
+                outputSetupSource = "ChangExport", categoryRowCount = layers.Count(r => !r.IsCustom), intermediateDwgWritten = false,
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false,
                 customFiltersRequested = layers.Count(r => r.IsCustom), customFilterMethod = "Independent temporary sheet/view copies, type-name contains, color marker remap, transaction-group rollback",
                 requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
@@ -175,4 +175,5 @@ public sealed class ExportItemResult
     public int PaperEntityCount { get; set; }
     public string ErrorDetails { get; set; } = "";
     public List<object> SheetDiagnostics { get; } = new();
+    public Dictionary<string, double> TimingsMs { get; } = new();
 }

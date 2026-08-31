@@ -17,10 +17,10 @@ public sealed class DwgPrototypeDiagnosticsCommand : IExternalCommand
             Document document = commandData.Application.ActiveUIDocument.Document;
             var store = ExportConfigurationStore.ForDocument(document); var config = store.Load();
             var mapping = new RevitLayerMappingService(document);
-            bool setupExists = mapping.SetupNames.Contains(config.SelectedSetup);
-            string status = setupExists ? $"매핑 {mapping.Read(config.SelectedSetup, config).Count:N0}개" : "저장된 Revit 출력 설정이 없어 재선택 필요";
+            bool setupExists = RevitLayerMappingService.SetupNames(config).Contains(config.SelectedOutputSetup);
+            string status = setupExists ? $"매핑 {mapping.Read(config.SelectedOutputSetup, config).Count:N0}개" : "저장된 출력 설정이 없어 재선택 필요";
             TaskDialog.Show("창Export 기술 진단", $"{ProductInfo.Version}\n모델: {document.Title}\nRevit: {document.Application.VersionNumber}\n\n" +
-                $"Revit 출력 설정: {mapping.SetupNames.Count - 1}개 + 기본값\n{status}\n시트: {SheetSetService.ReadSheets(document).Count}개\n" +
+                $"창Export 출력 설정: {RevitLayerMappingService.SetupNames(config).Count}개 (기본값 포함)\n{status}\n시트: {SheetSetService.ReadSheets(document).Count}개\n" +
                 $"DWG 엔진: {ManagedDwgProcessor.EngineName}\n외부 CAD 프로그램: 설치/실행 불필요\n\n" +
                 "현재 출력: Revit 기본 카테고리 매핑 → 내장 엔진 시트 변환 → 세트별 모형공간 병합\n" +
                 "커스텀 필터: 현재 프로젝트 유형 이름 포함 / 독립 복제 뷰 → DWG 레이어 변환 → 임시 요소 복구\n" +
