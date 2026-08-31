@@ -95,7 +95,8 @@ public sealed class RevitDwgExportService
                             conversion = processor.Run(request, input, setFolder, cancel, pump);
                         }
                         item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, input, nativeFiles = Directory.GetFiles(nativeDirectory).Select(Path.GetFileName),
-                            conversion.ConvertedViewports, conversion.CustomRuleEntityCounts });
+                            conversion.ConvertedViewports, conversion.CustomRuleEntityCounts, conversion.ModelScale,
+                            conversion.ExplodedInserts, conversion.BoundaryBlocksRetained });
                         if (placedViews.Count > 0 && Directory.GetFiles(nativeDirectory, "*.dwg").Length == 1)
                             item.Warnings.Add($"도면 내용 확인: 시트 {sheet.SheetNumber}의 배치 뷰는 {placedViews.Count}개지만 별도 뷰 DWG가 없습니다. 도곽만 생성된 경우를 포함하여 원본 시트와 비교하세요. 파일 저장과 내용 완전성은 별도입니다.");
                         item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {sheet.SheetNumber}: {w}")); flattened.Add(flat);
@@ -124,7 +125,7 @@ public sealed class RevitDwgExportService
             File.WriteAllText(result.ManifestPath, JsonSerializer.Serialize(new
             {
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
-                addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Sheet paper millimeters",
+                addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Model millimeters; sheet scaled by largest 2D viewport denominator",
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false,
                 customFiltersRequested = layers.Count(r => r.IsCustom), customFilterMethod = "Independent temporary sheet/view copies, type-name contains, color marker remap, transaction-group rollback",
                 requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items

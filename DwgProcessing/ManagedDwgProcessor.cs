@@ -30,7 +30,11 @@ public sealed partial class ManagedDwgProcessor
             CadDocument source = Read(inputDrawing, response.Warnings);
             var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers);
-            if (request.RevitSheet) PrepareRevitSheet(source, response);
+            if (request.RevitSheet)
+            {
+                PrepareRevitSheet(source, response);
+                response.ModelScale = RevitModelScale(source, response.Warnings);
+            }
             document = Flatten(source, response.Warnings, Check, request.RevitSheet);
             RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
             document = ApplyCustomRemaps(document, request, response);
@@ -38,6 +42,7 @@ public sealed partial class ManagedDwgProcessor
                 .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         }
         else document = Merge(request, response, Check);
+        if (request.RevitSheet) document = EditableModel(document, response, Check);
         Check();
         Directory.CreateDirectory(workingDirectory);
         string temporary = Path.Combine(workingDirectory, "managed_" + Guid.NewGuid().ToString("N") + ".dwg");

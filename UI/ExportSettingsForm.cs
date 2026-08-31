@@ -52,7 +52,7 @@ public sealed class ExportSettingsForm : Form
         settings.Controls.Add(new Label { Text = "출력 폴더", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         _folder = new TextBox { Dock = DockStyle.Fill, Text = defaultFolder }; settings.Controls.Add(_folder, 1, 1);
         var browse = UiTheme.SecondaryButton("찾아보기"); browse.Click += (_, _) => { using var picker = new FolderBrowserDialog { SelectedPath = OutputFolder }; if (picker.ShowDialog(this) == DialogResult.OK) _folder.Text = picker.SelectedPath; }; settings.Controls.Add(browse, 2, 1); root.Controls.Add(settings);
-        var notice = UiTheme.Muted("출력 기준: DWG 2010 · 시트 지면 크기(mm), 시트의 상대 축척 유지. 각 뷰의 실물 1:1 변환은 하지 않습니다.\n원근·음영 뷰는 생략하고 이미지는 사각형으로 대체하여 나머지 도면과 세트를 저장합니다. 생략·대체 내역은 출력 결과에 표시합니다.");
+        var notice = UiTheme.Muted("출력 기준: DWG 2010 · 모형 mm · 시트별 가장 큰 2D 뷰의 축척으로 도곽까지 확대합니다. 혼합 축척은 다른 뷰의 상대 크기를 유지합니다.\n일반 블록은 개별 객체로 출력하며 경계에 걸친 문자·해치·곡선만 잘림 블록을 유지합니다. 원근·음영 뷰는 생략, 이미지는 사각형으로 대체합니다.");
         notice.MaximumSize = new Size(980, 0); notice.Margin = new Padding(0, 0, 0, 12); root.Controls.Add(notice);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(ExportSetChoice.Selected), HeaderText = "출력", FillWeight = 40 });

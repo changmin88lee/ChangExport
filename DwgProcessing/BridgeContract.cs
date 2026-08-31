@@ -45,6 +45,9 @@ namespace ChangExport.DwgProcessing
         public List<int> PaletteRgb { get; set; } = new List<int>();
         public List<SheetPlacement> EntityBounds { get; set; } = new List<SheetPlacement>();
         public int ConvertedViewports { get; set; }
+        public double ModelScale { get; set; } = 1;
+        public int ExplodedInserts { get; set; }
+        public int BoundaryBlocksRetained { get; set; }
         public Dictionary<string, int> CustomRuleEntityCounts { get; set; } = new();
     }
 

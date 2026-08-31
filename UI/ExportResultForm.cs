@@ -28,7 +28,7 @@ public sealed class ExportResultForm : Form
             list.Items.Add($"[{(item.Success ? item.Warnings.Count > 0 ? "저장 완료 · 안내 확인" : "성공" : "실패")}] {item.SheetNumber} {item.SheetName}  {item.Message}");
             foreach (string warning in item.Warnings.Distinct()) list.Items.Add("  확인 필요: " + warning);
         }
-        list.Items.Add("원본 시트와 도곽·치수·글자·해치·축척을 비교하세요. 시트 지면 mm 기준이며 실물 1:1 변환은 아닙니다.");
+        list.Items.Add("원본 시트와 도곽·치수·글자·해치를 비교하세요. 시트별 기준 뷰는 실물 크기(mm), 다른 축척 뷰는 상대 크기를 유지합니다.");
         list.Items.Add("임시 DWG/진단 파일: " + result.WorkFolder);
         root.Controls.Add(list);
 

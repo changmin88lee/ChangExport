@@ -22,11 +22,13 @@ internal static class Program
             return File.Exists(path) ? AssemblyLoadContext.Default.LoadFromAssemblyPath(path) : null;
         };
         string output = Path.GetFullPath(args.Length > 1 ? args[1] : "bin/Verification/Tests");
+        System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(typeof(ManagedDwgProcessor).Module.ModuleHandle);
         Directory.CreateDirectory(output);
         try
         {
             if (args.Length > 0 && args[0] == "dwg")
             { IndependentDwg(output, args[2]); CustomLayerRegression.Run(output, Check); RevitSheetRegression.Run(output, Check, Near); }
+            else if (args.Length > 0 && args[0] == "editable") { RevitSheetRegression.Run(output, Check, Near); EditableModelRegression.Run(output, Check, Near); }
             else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));

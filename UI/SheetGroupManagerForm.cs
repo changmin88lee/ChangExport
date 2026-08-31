@@ -31,7 +31,7 @@ public sealed class SheetGroupManagerForm : Form
         toolbar.Controls.Add(create); toolbar.Controls.Add(release); root.Controls.Add(toolbar);
         _cards = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         _cards.ClientSizeChanged += (_, _) => ResizeCards(); root.Controls.Add(_cards);
-        _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 간격 단위는 시트 지면 mm입니다."); root.Controls.Add(_status);
+        _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 간격 단위는 확대 후 모형공간 mm입니다."); root.Controls.Add(_status);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 10, 0, 0) };
         var save = UiTheme.PrimaryButton("세트 저장"); save.Click += (_, _) => Save();
         var cancel = UiTheme.SecondaryButton("취소"); cancel.DialogResult = DialogResult.Cancel;
@@ -100,7 +100,7 @@ public sealed class SheetGroupManagerForm : Form
     {
         foreach (Panel card in _cards.Controls)
             card.BackColor = _editor.SelectedIds.Contains((string)card.Tag!) ? Color.FromArgb(216, 234, 251) : Color.White;
-        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 간격은 시트 지면 mm";
+        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 간격은 모형공간 mm";
     }
     private void ResizeCards()
     { foreach (Control card in _cards.Controls) card.Width = Math.Max(780, _cards.ClientSize.Width - 28); }

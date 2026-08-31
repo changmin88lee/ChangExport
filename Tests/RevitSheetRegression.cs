@@ -33,12 +33,11 @@ internal static class RevitSheetRegression
         string input = Path.Combine(output, "revit-sheet-source.dwg"), target = Path.Combine(output, "revit-sheet-final.dwg"); DwgWriter.Write(input, doc);
         var result = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", RevitSheet = true, OutputPath = target }, input, output);
         var saved = DwgReader.Read(target);
-        var outer = (Insert)saved.Entities.Single();
-        var view = outer.Block.Entities.OfType<Insert>().Single(i => i.SpatialFilter != null);
-        near(outer.XScale, 1, "Revit sheet coordinates must not be multiplied by 25.4");
-        near(result.EntityBounds.Single().Width, 420, "A3 sheet width remains 420 mm");
-        near(result.EntityBounds.Single().Height, 297, "A3 sheet height remains 297 mm");
-        near(view.XScale, .01, "First actual viewport's 1:100 scale retained");
+        check(!saved.Entities.OfType<Insert>().Any(), "Simple Revit output is individual entities, not a sheet block");
+        near(result.ModelScale, 100, "First actual viewport determines 1:100 model scaling, not default paper viewport");
+        near(saved.Header.ModelSpaceExtMax.X - saved.Header.ModelSpaceExtMin.X, 42000, "A3 frame enlarged 100 times in millimeters");
+        near(saved.Header.ModelSpaceExtMax.Y - saved.Header.ModelSpaceExtMin.Y, 29700, "A3 frame height enlarged 100 times");
+        near(saved.Entities.OfType<Line>().Single().EndPoint.DistanceFrom(saved.Entities.OfType<Line>().Single().StartPoint), Math.Sqrt(2) * 1000, "Referenced line actual length retained");
         check(result.ConvertedViewports == 1, "Default layout viewport skipped independently of order");
         check(saved.BlockRecords.All(b => (b.Flags & (BlockTypeFlags.XRef | BlockTypeFlags.XRefOverlay)) == 0), "No external reference remains");
         check(saved.BlockRecords.SelectMany(b => b.Entities).Any(e => e is Line && e.Layer.Name == "S-COL"), "Referenced model geometry and Revit category layer name retained");
