@@ -1,7 +1,8 @@
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using ChangExport.Parameters;
+using ChangExport.App;
+using ChangExport.DwgProcessing;
 using ChangExport.Standards;
 
 namespace ChangExport.Commands;
@@ -11,48 +12,21 @@ public sealed class DwgPrototypeDiagnosticsCommand : IExternalCommand
 {
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
     {
-        UIDocument uiDocument = commandData.Application.ActiveUIDocument;
-        Document document = uiDocument.Document;
         try
         {
-            var parameters = new SharedParameterService();
-            var repository = new CadStandardRepository();
-            var profile = repository.LoadActive();
-            var sheetService = new SheetExportParameterService();
-            List<ViewSheet> sheets = new FilteredElementCollector(document)
-                .OfClass(typeof(ViewSheet)).Cast<ViewSheet>().Where(x => !x.IsPlaceholder).ToList();
-            int grouped = sheets.Count(x => !string.IsNullOrWhiteSpace(sheetService.GetGroup(x)));
-            int selected = uiDocument.Selection.GetElementIds().Count;
-            int setupCount = BaseExportOptions.GetPredefinedSetupNames(document).Count;
-
-            string report =
-                $"모델: {document.Title}\n" +
-                $"Revit: {document.Application.VersionNumber}\n" +
-                $"활성 View: {uiDocument.ActiveView.Name}\n\n" +
-                $"CAD_LAYER Binding: {Mark(parameters.HasCadLayerBinding(document))}\n" +
-                $"CAD_EXPORT_GROUP Binding: {Mark(parameters.HasExportGroupBinding(document))}\n" +
-                $"CAD_EXPORT_ORDER Binding: {Mark(parameters.HasExportOrderBinding(document))}\n\n" +
-                $"선택 객체: {selected:N0}개\n" +
-                $"Sheet: {sheets.Count:N0}개 (그룹 지정 {grouped:N0})\n" +
-                $"DWG Export Setup: {setupCount:N0}개\n" +
-                $"Profile: {profile.ProfileName} (Layer {profile.Layers.Count}, Rule {profile.Rules.Count})\n" +
-                $"Profile 검사: {(repository.Validate(profile).Count == 0 ? "정상" : "확인 필요")}\n\n" +
-                "Beta 기술 상태\n" +
-                "- Native Sheet DWG Export: 구현\n" +
-                "- CAD_LAYER / Rule 판정: 구현\n" +
-                "- 임시 객체별 DWG Layer 분리: 기술 게이트 대기\n" +
-                "- DWG Layer Remap/Merge: SDK 미연결\n" +
-                "- Sheet Model Space 평면화/병합: SDK 미연결";
-
-            TaskDialog.Show("창Export 기술 진단", report);
+            Document document = commandData.Application.ActiveUIDocument.Document;
+            var store = ExportConfigurationStore.ForDocument(document); var config = store.Load();
+            var mapping = new RevitLayerMappingService(document); var processor = new AutoCadProcessor();
+            bool setupExists = mapping.SetupNames.Contains(config.SelectedSetup);
+            string status = setupExists ? $"매핑 {mapping.Read(config.SelectedSetup, config).Count:N0}개" : "저장된 Revit 출력 설정이 없어 재선택 필요";
+            TaskDialog.Show("창Export 기술 진단", $"{ProductInfo.Version}\n모델: {document.Title}\nRevit: {document.Application.VersionNumber}\n\n" +
+                $"Revit 출력 설정: {mapping.SetupNames.Count - 1}개 + 기본값\n{status}\n시트: {SheetSetService.ReadSheets(document).Count}개\n" +
+                $"AutoCAD 2023: {(processor.IsAvailable ? "실행 파일 확인 (라이선스/실제 실행은 출력 시 검사)" : "설치 경로 확인 필요")}\n\n" +
+                "현재 출력: Revit 기본 카테고리 매핑 → AutoCAD 시트 평면화 → 세트별 모형공간 병합\n" +
+                "커스텀 필터: 다음 단계 / 기존 CAD_LAYER·Rule은 이번 출력에 미적용\n" +
+                "실제 Revit 시트의 글자·치수·해치·잘림·축척은 출력 결과 비교가 필요합니다.\n\n설정 파일: " + store.FilePath);
             return Result.Succeeded;
         }
-        catch (Exception ex)
-        {
-            message = ex.Message;
-            return Result.Failed;
-        }
+        catch (Exception ex) { message = ex.Message; return Result.Failed; }
     }
-
-    private static string Mark(bool value) => value ? "정상" : "준비 필요";
 }

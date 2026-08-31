@@ -24,17 +24,13 @@ public sealed class App : IExternalApplication
         RibbonPanel exportPanel = GetOrCreatePanel(application, "DWG 출력");
         RibbonPanel supportPanel = GetOrCreatePanel(application, "지원");
 
-        AddButton(layerPanel, "AssignCadLayer", "CAD Layer\n지정", assemblyPath,
-            typeof(AssignCadLayerCommand), "선택한 객체에 회사 CAD Layer를 지정합니다.");
-        AddButton(layerPanel, "ClearCadLayer", "CAD Layer\n제거", assemblyPath,
-            typeof(ClearCadLayerCommand), "선택한 객체의 CAD_LAYER 값을 비웁니다.");
-        AddButton(layerPanel, "ManageLayers", "Layer/Rule\n관리", assemblyPath,
-            typeof(ManageCadLayersCommand), "회사 Layer Profile과 자동 분류 Rule을 관리합니다.");
+        AddButton(layerPanel, "ManageLayers", "DWG 레이어\n설정", assemblyPath,
+            typeof(ManageCadLayersCommand), "Revit의 전체 DWG 카테고리 매핑과 색상을 설정합니다.");
 
-        AddButton(exportPanel, "ManageSheets", "Sheet 그룹\n관리", assemblyPath,
-            typeof(ManageSheetGroupsCommand), "시트의 CAD_EXPORT_GROUP과 CAD_EXPORT_ORDER를 편집합니다.");
+        AddButton(exportPanel, "ManageSheets", "시트 세트\n구성", assemblyPath,
+            typeof(ManageSheetGroupsCommand), "시트를 선택해 세트를 구성하고 순서와 가로·세로 배치를 설정합니다.");
         AddButton(exportPanel, "ExportCompanyDwg", "회사 DWG\n출력", assemblyPath,
-            typeof(ExportCompanyDwgCommand), "그룹과 순서를 확인한 뒤 Revit Native DWG를 출력합니다.");
+            typeof(ExportCompanyDwgCommand), "AutoCAD 2023을 연동하여 세트별 DWG를 모형공간에 출력합니다.");
 
         AddButton(supportPanel, "DwgDiagnostics", "기술\n진단", assemblyPath,
             typeof(DwgPrototypeDiagnosticsCommand), "프로젝트 매개변수와 DWG Export 준비 상태를 점검합니다.");
@@ -66,6 +62,6 @@ public sealed class App : IExternalApplication
         var data = new PushButtonData(internalName, text, assemblyPath, commandType.FullName);
         var button = (PushButton)panel.AddItem(data);
         button.ToolTip = toolTip;
-        button.LongDescription = "Revit 2026용 창Export Beta 기능입니다.";
+        button.LongDescription = $"Revit 2026용 창Export {ProductInfo.Version} · 모형공간 출력은 AutoCAD 2023 연동";
     }
 }

@@ -4,7 +4,7 @@ namespace ChangExport.DwgProcessing;
 
 /// <summary>
 /// RealDWG, AutoCAD .NET 또는 승인된 DWG SDK를 연결하기 위한 제품 경계입니다.
-/// Beta 0.1.0에는 Native Export까지만 포함되며 이 인터페이스 구현체는 배포하지 않습니다.
+/// 향후 객체별 Remap을 위한 인터페이스입니다. 현재 시트 평면화/병합은 AutoCadProcessor가 담당합니다.
 /// </summary>
 public interface IDwgProcessor
 {

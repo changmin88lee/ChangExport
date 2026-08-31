@@ -1,106 +1,107 @@
-using System.ComponentModel;
 using System.Drawing;
 using System.Windows.Forms;
+using ChangExport.Models;
 
 namespace ChangExport.UI;
 
-public sealed class SheetGroupRow
-{
-    public long ElementId { get; init; }
-    public string SheetNumber { get; init; } = string.Empty;
-    public string SheetName { get; init; } = string.Empty;
-    public string ExportGroup { get; set; } = string.Empty;
-    public int ExportOrder { get; set; }
-    public string FilePreview => Sanitize(ExportGroup.Length == 0 ? "미지정" : ExportGroup) + ".dwg";
-
-    private static string Sanitize(string value)
-    {
-        foreach (char c in Path.GetInvalidFileNameChars()) value = value.Replace(c, '_');
-        return value;
-    }
-}
-
 public sealed class SheetGroupManagerForm : Form
 {
-    private readonly BindingList<SheetGroupRow> _rows;
-    private readonly DataGridView _grid;
-    private readonly TextBox _groupBox;
-    public IReadOnlyList<SheetGroupRow> Rows => _rows.ToList();
+    private readonly SheetSetEditor _editor;
+    private readonly Dictionary<string, SheetDescriptor> _sheets;
+    private readonly FlowLayoutPanel _cards;
+    private readonly TextBox _name;
+    private readonly Label _status;
+    public IReadOnlyList<SheetSetDefinition> ResultSets => _editor.Sets.Select(s => s.Copy()).ToList();
 
-    public SheetGroupManagerForm(IEnumerable<SheetGroupRow> rows)
+    public SheetGroupManagerForm(IEnumerable<SheetDescriptor> sheets, IEnumerable<SheetSetDefinition> sets)
     {
-        _rows = new BindingList<SheetGroupRow>(rows.OrderBy(x => x.SheetNumber, StringComparer.CurrentCultureIgnoreCase).ToList());
-        Text = "Sheet 그룹 관리";
-        Width = 940;
-        Height = 620;
-        MinimumSize = new Size(760, 500);
-        UiTheme.Apply(this);
-
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), RowCount = 4, ColumnCount = 1 };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _sheets = sheets.ToDictionary(s => s.UniqueId); _editor = new SheetSetEditor(sets);
+        Text = "시트 세트 구성"; ClientSize = new Size(1000, 720); MinimumSize = new Size(860, 580); UiTheme.Apply(this);
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), RowCount = 5, ColumnCount = 1 };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
-
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        title.Controls.Add(UiTheme.Heading("Sheet 그룹 및 출력 순서"));
-        title.Controls.Add(UiTheme.Muted("같은 그룹의 시트는 후처리 엔진 연결 시 하나의 최종 DWG로 묶입니다. Beta는 그룹별 폴더에 Native DWG를 생성합니다."));
-        root.Controls.Add(title);
-
-        var toolbar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(0, 12, 0, 8) };
-        toolbar.Controls.Add(new Label { Text = "선택 행 그룹", AutoSize = true, Margin = new Padding(0, 8, 8, 0) });
-        _groupBox = new TextBox { Width = 180, PlaceholderText = "예: 평면도" };
-        toolbar.Controls.Add(_groupBox);
-        Button assign = UiTheme.SecondaryButton("그룹 일괄 지정");
-        assign.Click += (_, _) => AssignGroup();
-        toolbar.Controls.Add(assign);
-        Button order = UiTheme.SecondaryButton("그룹별 Order 자동 번호");
-        order.Click += (_, _) => AutoOrder();
-        toolbar.Controls.Add(order);
-        root.Controls.Add(toolbar);
-
-        _grid = UiTheme.Grid();
-        _grid.AutoGenerateColumns = false;
-        _grid.DataSource = _rows;
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SheetGroupRow.SheetNumber), HeaderText = "Sheet 번호", ReadOnly = true, FillWeight = 75 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SheetGroupRow.SheetName), HeaderText = "Sheet 이름", ReadOnly = true, FillWeight = 140 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SheetGroupRow.ExportGroup), HeaderText = "CAD_EXPORT_GROUP", FillWeight = 105 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SheetGroupRow.ExportOrder), HeaderText = "CAD_EXPORT_ORDER", FillWeight = 75 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(SheetGroupRow.FilePreview), HeaderText = "최종 파일명 미리보기", ReadOnly = true, FillWeight = 110 });
-        root.Controls.Add(_grid);
-
-        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 12, 0, 0) };
-        Button save = UiTheme.PrimaryButton("프로젝트에 저장");
-        save.Click += (_, _) => { _grid.EndEdit(); DialogResult = DialogResult.OK; Close(); };
-        Button cancel = UiTheme.SecondaryButton("취소");
-        cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
-        actions.Controls.Add(save);
-        actions.Controls.Add(cancel);
-        root.Controls.Add(actions);
-        AcceptButton = save;
-        CancelButton = cancel;
+        title.Controls.Add(UiTheme.Heading("시트를 선택하여 세트로 묶으세요"));
+        title.Controls.Add(UiTheme.Muted("클릭: 하나 선택 · Ctrl: 여러 개 선택 · Shift: 범위 선택 · 세트당 DWG 하나를 모형공간에 배치합니다.")); root.Controls.Add(title);
+        var toolbar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 10) };
+        _name = new TextBox { Width = 180, PlaceholderText = "새 세트 이름", Margin = new Padding(0, 6, 8, 0) }; toolbar.Controls.Add(_name);
+        var create = UiTheme.PrimaryButton("+ 선택 시트 세트"); create.Click += (_, _) => Act(() => _editor.Combine(_name.Text));
+        var release = UiTheme.SecondaryButton("세트 해제"); release.Click += (_, _) => Act(() => _editor.Release(_sheets));
+        toolbar.Controls.Add(create); toolbar.Controls.Add(release); root.Controls.Add(toolbar);
+        _cards = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        _cards.ClientSizeChanged += (_, _) => ResizeCards(); root.Controls.Add(_cards);
+        _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 간격 단위는 시트 지면 mm입니다."); root.Controls.Add(_status);
+        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 10, 0, 0) };
+        var save = UiTheme.PrimaryButton("세트 저장"); save.Click += (_, _) => Save();
+        var cancel = UiTheme.SecondaryButton("취소"); cancel.DialogResult = DialogResult.Cancel;
+        actions.Controls.Add(save); actions.Controls.Add(cancel); root.Controls.Add(actions); CancelButton = cancel;
+        Render();
     }
-
-    private void AssignGroup()
+    private void Act(Action action)
     {
-        string group = _groupBox.Text.Trim();
-        IEnumerable<DataGridViewRow> selected = _grid.SelectedRows.Cast<DataGridViewRow>();
-        foreach (DataGridViewRow row in selected)
-        {
-            if (row.DataBoundItem is SheetGroupRow item) item.ExportGroup = group;
-        }
-        _grid.Refresh();
+        try { action(); Render(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "세트 구성"); }
     }
-
-    private void AutoOrder()
+    private void Save()
     {
-        foreach (IGrouping<string, SheetGroupRow> group in _rows.GroupBy(x => x.ExportGroup ?? string.Empty, StringComparer.OrdinalIgnoreCase))
-        {
-            int order = 1;
-            foreach (SheetGroupRow row in group.OrderBy(x => x.SheetNumber, StringComparer.CurrentCultureIgnoreCase))
-                row.ExportOrder = order++;
-        }
-        _grid.Refresh();
+        if (_editor.Sets.Any(s => string.IsNullOrWhiteSpace(s.Name))) { MessageBox.Show(this, "세트 이름을 입력하세요."); return; }
+        if (_editor.Sets.GroupBy(s => s.Name.Trim(), StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
+        { MessageBox.Show(this, "같은 세트 이름이 있습니다. 구별되는 이름을 사용하세요."); return; }
+        DialogResult = DialogResult.OK; Close();
     }
+    private void Render()
+    {
+        int scroll = -_cards.AutoScrollPosition.Y; _cards.SuspendLayout();
+        foreach (Control old in _cards.Controls.Cast<Control>().ToList()) old.Dispose();
+        foreach (SheetSetDefinition set in _editor.Sets)
+        {
+            var card = new Panel { Width = Math.Max(780, _cards.ClientSize.Width - 28), Height = 83 + set.SheetUniqueIds.Count * 32,
+                Margin = new Padding(0, 0, 0, 10), Padding = new Padding(12), BorderStyle = BorderStyle.FixedSingle, Tag = set.Id };
+            var header = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 36, WrapContents = false };
+            header.Controls.Add(new Label { Text = set.SheetUniqueIds.Count > 1 ? $"세트 · {set.SheetUniqueIds.Count}장" : "시트 · 1장", Width = 90, Margin = new Padding(0, 7, 8, 0) });
+            var name = new TextBox { Text = set.Name, Width = 215 }; name.TextChanged += (_, _) => set.Name = name.Text;
+            header.Controls.Add(name);
+            var direction = new ComboBox { Width = 104, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(14, 3, 3, 3) };
+            direction.Items.AddRange(new object[] { "가로 일렬", "세로 일렬" }); direction.SelectedIndex = set.Direction == "Vertical" ? 1 : 0;
+            direction.SelectedIndexChanged += (_, _) => set.Direction = direction.SelectedIndex == 1 ? "Vertical" : "Horizontal"; header.Controls.Add(direction);
+            header.Controls.Add(new Label { Text = "간격 mm", AutoSize = true, Margin = new Padding(12, 7, 2, 0) });
+            var margin = new NumericUpDown { Width = 95, Minimum = 0, Maximum = 100000, Value = (decimal)Math.Clamp(set.MarginMm, 0, 100000), DecimalPlaces = 0 };
+            margin.ValueChanged += (_, _) => set.MarginMm = (double)margin.Value; header.Controls.Add(margin);
+            var members = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(0, 6, 0, 0) };
+            for (int i = 0; i < set.SheetUniqueIds.Count; i++)
+            {
+                int index = i; string id = set.SheetUniqueIds[i]; bool exists = _sheets.TryGetValue(id, out var sheet);
+                var row = new FlowLayoutPanel { Width = 740, Height = 30, Margin = Padding.Empty, WrapContents = false };
+                row.Controls.Add(new Label { Text = $"{i + 1:00}   " + (exists ? $"{sheet!.Number}   {sheet.Name}" : "[프로젝트에 없는 시트]"),
+                    Width = 600, ForeColor = exists ? UiTheme.Navy : Color.Firebrick, AutoEllipsis = true, Margin = new Padding(8, 6, 4, 0) });
+                var up = new Button { Text = "↑", Width = 32, Height = 26, Enabled = i > 0, AccessibleName = "시트 위로" };
+                var down = new Button { Text = "↓", Width = 32, Height = 26, Enabled = i < set.SheetUniqueIds.Count - 1, AccessibleName = "시트 아래로" };
+                up.Click += (_, _) => Act(() => _editor.MoveSheet(set.Id, index, -1)); down.Click += (_, _) => Act(() => _editor.MoveSheet(set.Id, index, 1));
+                row.Controls.Add(up); row.Controls.Add(down);
+                if (!exists)
+                {
+                    var remove = new Button { Text = "×", Width = 28, Height = 26 };
+                    remove.Click += (_, _) => Act(() => { set.SheetUniqueIds.RemoveAt(index); if (set.SheetUniqueIds.Count == 0) _editor.Sets.Remove(set); }); row.Controls.Add(remove);
+                }
+                members.Controls.Add(row);
+            }
+            card.Controls.Add(members); card.Controls.Add(header); _cards.Controls.Add(card); AttachSelection(card, set.Id);
+        }
+        ResizeCards(); RefreshSelection(); _cards.ResumeLayout(true); _cards.AutoScrollPosition = new Point(0, scroll);
+    }
+    private void AttachSelection(Control control, string id)
+    {
+        if (control is not Button)
+            control.MouseDown += (_, e) => { if (e.Button != MouseButtons.Left) return;
+                _editor.Select(id, ModifierKeys.HasFlag(Keys.Control), ModifierKeys.HasFlag(Keys.Shift)); RefreshSelection(); };
+        foreach (Control child in control.Controls) AttachSelection(child, id);
+    }
+    private void RefreshSelection()
+    {
+        foreach (Panel card in _cards.Controls)
+            card.BackColor = _editor.SelectedIds.Contains((string)card.Tag!) ? Color.FromArgb(216, 234, 251) : Color.White;
+        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 간격은 시트 지면 mm";
+    }
+    private void ResizeCards()
+    { foreach (Control card in _cards.Controls) card.Width = Math.Max(780, _cards.ClientSize.Width - 28); }
 }

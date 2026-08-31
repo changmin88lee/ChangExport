@@ -55,6 +55,12 @@ internal static class UiTheme
         MultiSelect = true,
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
+        AllowUserToResizeColumns = false,
+        AllowUserToResizeRows = false,
+        AllowUserToOrderColumns = false,
+        ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+        RowHeadersWidthSizeMode = DataGridViewRowHeadersWidthSizeMode.DisableResizing,
+        RowTemplate = { Height = 30 },
         Dock = DockStyle.Fill
     };
 

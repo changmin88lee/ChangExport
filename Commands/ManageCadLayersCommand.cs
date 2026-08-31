@@ -13,8 +13,11 @@ public sealed class ManageCadLayersCommand : IExternalCommand
     {
         try
         {
-            var repository = new CadStandardRepository();
-            using var form = new LayerRuleManagerForm(repository, repository.LoadActive());
+            var document = commandData.Application.ActiveUIDocument.Document;
+            var store = ExportConfigurationStore.ForDocument(document);
+            var configuration = store.Load();
+            var mapping = new RevitLayerMappingService(document);
+            using var form = new LayerRuleManagerForm(store, configuration, mapping.SetupNames, name => mapping.Read(name, configuration));
             form.ShowDialog();
             return Result.Succeeded;
         }

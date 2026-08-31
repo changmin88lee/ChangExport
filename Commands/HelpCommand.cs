@@ -9,18 +9,20 @@ public sealed class HelpCommand : IExternalCommand
 {
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
     {
-        var dialog = new TaskDialog("창Export Beta 0.1.0")
+        var dialog = new TaskDialog("창Export " + ChangExport.App.ProductInfo.Version)
         {
-            MainInstruction = "한국형 DWG Export 프로토타입",
+            MainInstruction = "시트 세트 · 모형공간 DWG 출력",
             MainContent =
-                "1. 객체를 선택하고 CAD Layer 지정\n" +
-                "2. Layer/Rule 관리에서 회사 Profile 확인\n" +
-                "3. Sheet 그룹 관리에서 Group과 Order 저장\n" +
-                "4. 회사 DWG 출력에서 Sheet와 폴더 선택\n" +
-                "5. 결과 폴더의 Native DWG와 Manifest 확인",
+                "1. DWG 레이어 설정에서 Revit 출력 설정과 카테고리별 색상 확인\n" +
+                "2. 시트 세트 구성에서 Ctrl/Shift 선택 후 세트 생성\n" +
+                "3. 세트의 순서·가로/세로 방향·간격 저장\n" +
+                "4. 회사 DWG 출력에서 세트와 폴더 선택\n" +
+                "5. 최종 DWG 모형공간과 Manifest 확인",
             ExpandedContent =
-                "현재 Beta는 CAD_LAYER 공유 매개변수, 기본 Rule Engine, Sheet 그룹, Revit Native DWG Export를 제공합니다. " +
-                "DWG Layer Rename/Merge, 여러 Sheet의 단일 DWG Model Space 병합은 RealDWG 또는 승인된 DWG SDK가 연결된 뒤 활성화됩니다.",
+                "AutoCAD 2023과 유효한 실행 환경이 필요합니다. Revit 기본 DWG 매핑을 바탕으로 시트당 변환 후 세트별 하나의 모형공간 DWG를 만듭니다. " +
+                "시트 지면 mm와 시트의 상대 축척을 유지하며 각 뷰를 실물 1:1로 바꾸지는 않습니다. " +
+                "잘린 치수·해치·블록 등은 변환 결과를 확인하세요. 커스텀 필터는 다음 단계이며 기존 CAD_LAYER와 Rule은 이번 출력에 적용하지 않습니다. " +
+                "출력 설정은 프로젝트별 외부 파일에 저장되며 원본 RVT·Revit Setup·기존 Profile은 변경하지 않습니다.",
             CommonButtons = TaskDialogCommonButtons.Close
         };
         dialog.Show();

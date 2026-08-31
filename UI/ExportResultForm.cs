@@ -20,11 +20,16 @@ public sealed class ExportResultForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
 
-        root.Controls.Add(UiTheme.Heading(result.FailedCount == 0 ? "Native DWG 출력 완료" : "DWG 출력 확인 필요"));
+        root.Controls.Add(UiTheme.Heading(result.Cancelled ? "DWG 출력 취소" : result.FailedCount == 0 ? "모형공간 DWG 출력 완료" : "DWG 출력 확인 필요"));
         root.Controls.Add(UiTheme.Muted($"성공 {result.SuccessCount} · 실패 {result.FailedCount} · Manifest: {result.ManifestPath}"));
         var list = new ListBox { Dock = DockStyle.Fill, Margin = new Padding(0, 14, 0, 0) };
         foreach (ExportItemResult item in result.Items)
+        {
             list.Items.Add($"[{(item.Success ? "성공" : "실패")}] {item.SheetNumber} {item.SheetName}  {item.Message}");
+            foreach (string warning in item.Warnings.Distinct()) list.Items.Add("  확인 필요: " + warning);
+        }
+        list.Items.Add("원본 시트와 도곽·치수·글자·해치·축척을 비교하세요. 시트 지면 mm 기준이며 실물 1:1 변환은 아닙니다.");
+        list.Items.Add("임시 DWG/진단 파일: " + result.WorkFolder);
         root.Controls.Add(list);
 
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 12, 0, 0) };
