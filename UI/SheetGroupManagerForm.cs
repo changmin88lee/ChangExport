@@ -28,7 +28,8 @@ public sealed class SheetGroupManagerForm : Form
         _name = new TextBox { Width = 180, PlaceholderText = "새 세트 이름", Margin = new Padding(0, 6, 8, 0) }; toolbar.Controls.Add(_name);
         var create = UiTheme.PrimaryButton("+ 선택 시트 세트"); create.Click += (_, _) => Act(() => _editor.Combine(_name.Text));
         var release = UiTheme.SecondaryButton("세트 해제"); release.Click += (_, _) => Act(() => _editor.Release(_sheets));
-        toolbar.Controls.Add(create); toolbar.Controls.Add(release); root.Controls.Add(toolbar);
+        var spacing = UiTheme.SecondaryButton("배치 간격 설정"); spacing.Click += (_, _) => ConfigureSpacing();
+        toolbar.Controls.Add(create); toolbar.Controls.Add(release); toolbar.Controls.Add(spacing); root.Controls.Add(toolbar);
         _cards = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         _cards.ClientSizeChanged += (_, _) => ResizeCards(); root.Controls.Add(_cards);
         _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 간격 단위는 확대 후 모형공간 mm입니다."); root.Controls.Add(_status);
@@ -41,6 +42,14 @@ public sealed class SheetGroupManagerForm : Form
     private void Act(Action action)
     {
         try { action(); Render(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "세트 구성"); }
+    }
+    private void ConfigureSpacing()
+    {
+        using var dialog = new SheetSpacingSettingsForm(_editor.Sets);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var margins = dialog.ResultSets.ToDictionary(s => s.Id, s => s.MarginMm);
+        foreach (var set in _editor.Sets) set.MarginMm = margins[set.Id];
+        Render();
     }
     private void Save()
     {
@@ -64,9 +73,7 @@ public sealed class SheetGroupManagerForm : Form
             var direction = new ComboBox { Width = 104, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(14, 3, 3, 3) };
             direction.Items.AddRange(new object[] { "가로 일렬", "세로 일렬" }); direction.SelectedIndex = set.Direction == "Vertical" ? 1 : 0;
             direction.SelectedIndexChanged += (_, _) => set.Direction = direction.SelectedIndex == 1 ? "Vertical" : "Horizontal"; header.Controls.Add(direction);
-            header.Controls.Add(new Label { Text = "간격 mm", AutoSize = true, Margin = new Padding(12, 7, 2, 0) });
-            var margin = new NumericUpDown { Width = 95, Minimum = 0, Maximum = 100000, Value = (decimal)Math.Clamp(set.MarginMm, 0, 100000), DecimalPlaces = 0 };
-            margin.ValueChanged += (_, _) => set.MarginMm = (double)margin.Value; header.Controls.Add(margin);
+            header.Controls.Add(new Label { Text = $"간격 {set.MarginMm:N0} mm", AutoSize = true, Margin = new Padding(12, 7, 2, 0) });
             var members = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(0, 6, 0, 0) };
             for (int i = 0; i < set.SheetUniqueIds.Count; i++)
             {

@@ -66,7 +66,8 @@ public sealed class ExportSettingsForm : Form
         var cancel = UiTheme.SecondaryButton("취소"); cancel.DialogResult = DialogResult.Cancel;
         var all = UiTheme.SecondaryButton("전체 선택"); all.Click += (_, _) => { foreach (var c in _choices) c.Selected = true; _grid.Refresh(); };
         var none = UiTheme.SecondaryButton("전체 해제"); none.Click += (_, _) => { foreach (var c in _choices) c.Selected = false; _grid.Refresh(); };
-        actions.Controls.Add(run); actions.Controls.Add(cancel); actions.Controls.Add(none); actions.Controls.Add(all); root.Controls.Add(actions); CancelButton = cancel;
+        var spacing = UiTheme.SecondaryButton("배치 간격 설정"); spacing.Click += (_, _) => ConfigureSpacing();
+        actions.Controls.Add(run); actions.Controls.Add(cancel); actions.Controls.Add(none); actions.Controls.Add(all); actions.Controls.Add(spacing); root.Controls.Add(actions); CancelButton = cancel;
         Bind(sets);
     }
     private void Bind(IEnumerable<SheetSetDefinition> sets)
@@ -80,6 +81,21 @@ public sealed class ExportSettingsForm : Form
         using var dialog = new SheetGroupManagerForm(_sheets, _choices.Select(c => c.Set));
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         try { _saveSets(dialog.ResultSets); Bind(dialog.ResultSets); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "세트 저장 실패"); }
+    }
+    private void ConfigureSpacing()
+    {
+        _grid.EndEdit();
+        using var dialog = new SheetSpacingSettingsForm(_choices.Select(c => c.Set));
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            var result = dialog.ResultSets;
+            _saveSets(result);
+            var margins = result.ToDictionary(s => s.Id, s => s.MarginMm);
+            foreach (var choice in _choices) choice.Set.MarginMm = margins[choice.Set.Id];
+            _grid.Refresh();
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "간격 저장 실패"); }
     }
     private void Execute()
     {

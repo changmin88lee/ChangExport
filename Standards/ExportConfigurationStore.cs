@@ -26,8 +26,15 @@ public sealed class ExportConfigurationStore
         if (!File.Exists(FilePath)) return new();
         var config = JsonSerializer.Deserialize<RevitExportConfiguration>(File.ReadAllText(FilePath), Json)
             ?? throw new InvalidDataException("출력 설정 파일을 읽을 수 없습니다. 기존 파일은 유지됩니다.");
-        if (config.SchemaVersion != 1 || config.Setups is null || config.SheetSets is null)
+        if (config.SchemaVersion is not (1 or 2) || config.Setups is null || config.SheetSets is null)
             throw new InvalidDataException("지원하지 않는 출력 설정입니다. 기존 파일은 유지됩니다.");
+        if (config.SchemaVersion == 1)
+        {
+            // Adopt the requested touching-sheet default once, without writing during Load.
+            // Later spacing choices are kept by schema 2, including an explicit 10000 mm.
+            foreach (var set in config.SheetSets) set.MarginMm = 0;
+            config.SchemaVersion = 2;
+        }
         return config;
     }
 

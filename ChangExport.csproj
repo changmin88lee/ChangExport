@@ -14,8 +14,8 @@
     <Product>창Export</Product>
     <Description>한국형 Revit DWG Export 도구</Description>
     <Company>LAON ArcTec</Company>
-    <Version>0.4.0</Version>
-    <FileVersion>0.4.0.0</FileVersion>
+    <Version>0.4.1</Version>
+    <FileVersion>0.4.1.0</FileVersion>
     <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitInstallDir>
   </PropertyGroup>
 

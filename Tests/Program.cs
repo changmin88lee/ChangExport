@@ -104,6 +104,7 @@ internal static class Program
         Check(File.ReadAllText(existing) == "existing" && published.EndsWith("_v2.dwg") && File.ReadAllText(published) == "new", "No-overwrite publication");
 
         Application.SetHighDpiMode(HighDpiMode.SystemAware); Application.EnableVisualStyles();
+        SpacingRegression.Run(output, Check, Render);
         var uiRows = Enumerable.Range(0, 45).Select(i => new RevitLayerRow { Category = i < 15 ? "구조 기둥" : i < 30 ? "벽" : "주석",
             Subcategory = i % 15 == 0 ? "" : "하위 항목 " + i, Layer = "S-COL-" + i, OriginalLayer = "S-COL-" + i,
             CutLayer = "S-CUT-" + i, OriginalCutLayer = "S-CUT-" + i, Color = i + 1, OriginalColor = i + 1, CutColor = 7, OriginalCutColor = 7 }).ToList();

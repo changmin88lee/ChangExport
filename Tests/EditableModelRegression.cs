@@ -55,16 +55,17 @@ internal static class EditableModelRegression
         }
         near(response100.ModelScale, 100, "1:100 scale reported"); near(response200.ModelScale, 200, "1:200 scale reported");
         foreach (string direction in new[] { "Horizontal", "Vertical" })
+        foreach (double gap in new[] { 0d, 5000d })
         {
-            string path = Path.Combine(output, "mixed-set-" + direction + ".dwg");
+            string path = Path.Combine(output, $"mixed-set-{direction}-{gap}.dwg");
             var result = processor.Run(new BridgeRequest { Operation = "Merge", RevitSheet = true, Inputs = new() { first, second },
-                OutputPath = path, Direction = direction, MarginMm = 5000 }, first, output);
+                OutputPath = path, Direction = direction, MarginMm = gap }, first, output);
             var doc = DwgReader.Read(path);
             check(!doc.Entities.OfType<Insert>().Any(), "Merged set has no sheet container blocks");
             near(result.Placements[0].Width, 42000, "First sheet keeps 100-scale frame after merge");
             near(result.Placements[1].Width, 84000, "Second sheet keeps 200-scale frame after merge");
-            if (direction == "Horizontal") near(result.Placements[1].X, 47000, "Horizontal gap measured after scaling");
-            else near(result.Placements[0].Y - (result.Placements[1].Y + result.Placements[1].Height), 5000, "Vertical gap measured after scaling");
+            if (direction == "Horizontal") near(result.Placements[1].X, 42000 + gap, "Horizontal gap measured after scaling");
+            else near(result.Placements[0].Y - (result.Placements[1].Y + result.Placements[1].Height), gap, "Vertical gap measured after scaling");
             check(doc.Entities.OfType<Line>().Count(l => l.Layer.Name == "WALL" && Math.Abs(l.StartPoint.DistanceFrom(l.EndPoint) - 6000) < 1e-4) == 2,
                 "Merge preserves both real-size walls");
         }

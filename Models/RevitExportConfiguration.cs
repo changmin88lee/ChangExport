@@ -2,7 +2,7 @@ namespace ChangExport.Models;
 
 public sealed class RevitExportConfiguration
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public string SelectedSetup { get; set; } = string.Empty;
     public List<ExportSetupEdits> Setups { get; set; } = new();
     public List<SheetSetDefinition> SheetSets { get; set; } = new();
@@ -54,7 +54,7 @@ public sealed class SheetSetDefinition
     public string Name { get; set; } = string.Empty;
     public List<string> SheetUniqueIds { get; set; } = new();
     public string Direction { get; set; } = "Horizontal";
-    public double MarginMm { get; set; } = 10000;
+    public double MarginMm { get; set; } = 0;
     public SheetSetDefinition Copy() => new()
     {
         Id = Id, Name = Name, SheetUniqueIds = SheetUniqueIds.ToList(), Direction = Direction, MarginMm = MarginMm
