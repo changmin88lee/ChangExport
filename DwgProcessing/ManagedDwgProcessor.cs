@@ -67,6 +67,10 @@ public sealed partial class ManagedDwgProcessor
         // Marker colors must be consumed by ApplyCustomRemaps before removing overrides.
         if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
         DeduplicateFamilies(document, response, geometry);
+        response.FamilyBlockMatches = geometry.FamilyMatches;
+        int unmatchedFamilies = geometry.FamilyMatches.Count(m => m.Status.EndsWith("개별 객체 유지", StringComparison.Ordinal));
+        if (unmatchedFamilies > 0)
+            response.Warnings.Add($"패밀리 연결 확인: {unmatchedFamilies:N0}개 정의를 개별 객체로 유지했습니다. 진단 로그의 FamilyBlockMatches를 확인하세요.");
         if (request.WideLineLayers.Count > 0)
             response.Warnings.Add($"전역폭: 변환 {response.WideLineConverted:N0}개 · 원본 유지 {response.WideLineSkipped:N0}개 · Revit DWG 원본 선굵기 × 시트 배율 {response.ModelScale:G}");
         response.TimingsMs["editableObjects"] = phase.Elapsed.TotalMilliseconds;

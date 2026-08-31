@@ -8,6 +8,7 @@ public sealed class RevitExportConfiguration
     // Old Revit setup edits remain in Setups for preservation; they are not auto-imported.
     public string SelectedOutputSetup { get; set; } = string.Empty;
     public string WideLineKeyword { get; set; } = "##";
+    public List<string> AdditionalBlockFamilyIds { get; set; } = new();
     public List<ExportSetupEdits> OutputSetups { get; set; } = new() { new() };
     public List<SheetSetDefinition> SheetSets { get; set; } = new();
 }
@@ -68,3 +69,4 @@ public sealed class SheetSetDefinition
 }
 
 public sealed record SheetDescriptor(string UniqueId, long ElementId, string Number, string Name);
+public sealed record BlockFamilyChoice(string Identity, string Name, string Category);

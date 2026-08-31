@@ -34,7 +34,16 @@ namespace ChangExport.DwgProcessing
         public string Label { get; set; } = "";
         public bool IsTitleBlock { get; set; }
         public List<string> NativePrefixes { get; set; } = new();
+        // Full names collected from Revit, not DWG-derived substring rules.
+        public List<string> NativeLabels { get; set; } = new();
+        public string ExclusionReason { get; set; } = "";
+        public string Category { get; set; } = "";
+        public string FamilyIdentity { get; set; } = "";
+        public string FamilyName { get; set; } = "";
+        public bool CanSelectAdditional { get; set; }
     }
+
+    public sealed record FamilyBlockMatch(string NativeBlock, string Label, string Status);
 
     public sealed class FamilyBlockInfo
     {
@@ -85,6 +94,7 @@ namespace ChangExport.DwgProcessing
         public int FamilyBlockReferences { get; set; }
         public int FamilyBlockDefinitions { get; set; }
         public Dictionary<string, int> FamilyBlockFallbacks { get; set; } = new();
+        public List<FamilyBlockMatch> FamilyBlockMatches { get; set; } = new();
     }
 
     public sealed class SheetPlacement

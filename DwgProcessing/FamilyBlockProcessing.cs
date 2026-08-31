@@ -17,20 +17,39 @@ public sealed partial class ManagedDwgProcessor
 
     private static void TagFamilyBlocks(CadDocument document, GeometryContext context)
     {
-        if (context.FamilyIndex.Count == 0) return;
+        if (context.Request.FamilySources.Count == 0) return;
         foreach (var block in document.BlockRecords.ToArray())
         {
             if ((block.Flags & (ACadSharp.Blocks.BlockTypeFlags.XRef | ACadSharp.Blocks.BlockTypeFlags.XRefOverlay)) != 0) continue;
-            var matches = System.Text.RegularExpressions.Regex.Matches(block.Name, @"-[0-9]+-").Cast<System.Text.RegularExpressions.Match>()
+            var suffixes = System.Text.RegularExpressions.Regex.Matches(block.Name, @"-(?:[0-9]+|V[0-9]+)-").Cast<System.Text.RegularExpressions.Match>().ToArray();
+            var matches = suffixes
                 .SelectMany(m => context.FamilyIndex.GetValueOrDefault(FamilyKey(block.Name[..(m.Index + m.Length)])) ?? new())
-                .Distinct().ToArray();
-            if (matches.Length != 1) continue;
+                .DistinctBy(s => s.Identity).ToArray();
+            string method = "이름·ID 일치";
+            if (matches.Length == 0)
+            {
+                // Revit can use a geometry/linked-document ID or V1/V2 variant suffix.
+                // Match the entire collected family/type name and reject ambiguities.
+                matches = suffixes.SelectMany(m => context.FamilyNames.GetValueOrDefault(FamilyNameKey(block.Name[..m.Index])) ?? new())
+                    .DistinctBy(s => s.Identity).ToArray();
+                method = "전체 패밀리·유형 이름 일치";
+            }
+            if (matches.Length != 1)
+            {
+                if (matches.Length > 1 || (suffixes.Length > 0 && block.Name.Contains(" - ", StringComparison.Ordinal)))
+                    context.FamilyMatches.Add(new(block.Name, "", matches.Length > 1 ? "동일 이름 후보 중복 · 개별 객체 유지" : "Revit 패밀리 미연결 · 개별 객체 유지"));
+                continue;
+            }
             var source = matches[0];
+            context.FamilyMatches.Add(new(block.Name, source.Label, source.ExclusionReason.Length > 0 ? "제외: " + source.ExclusionReason : method));
+            if (source.ExclusionReason.Length > 0) continue;
             string token = "CE_SRCF_" + Hash(source.Identity)[..24] + "_";
             context.Families[token] = new FamilyBlockInfo { Identity = source.Identity, Label = source.Label, IsTitleBlock = source.IsTitleBlock };
             block.Name = token + Guid.NewGuid().ToString("N");
         }
     }
+
+    private static string FamilyNameKey(string name) => new(name.Where(char.IsLetterOrDigit).ToArray());
 
     private static string FamilyKey(string prefix)
     {
@@ -39,8 +58,7 @@ public sealed partial class ManagedDwgProcessor
         int end = prefix.Length - 1, start = prefix.LastIndexOf('-', end - 1);
         if (start < 0) return prefix;
         string id = prefix[start..];
-        string Normalize(string s) => new(s.Where(char.IsLetterOrDigit).ToArray());
-        return Normalize(prefix[..start]) + id;
+        return FamilyNameKey(prefix[..start]) + id;
     }
 
     private static FamilyBlockInfo? FamilyInfo(string name, GeometryContext? context) => context?.Families
@@ -134,7 +152,7 @@ public sealed partial class ManagedDwgProcessor
         response.FamilyBlocks = surviving;
         response.FamilyBlockDefinitions = used.Count;
         if (response.FamilyBlockReferences > 0)
-            response.Warnings.Add($"패밀리 블록: 배치 {response.FamilyBlockReferences:N0}개 · 공유 정의 {response.FamilyBlockDefinitions:N0}개 · 벽·바닥·독립 주석 제외");
+            response.Warnings.Add($"패밀리 블록: 배치 {response.FamilyBlockReferences:N0}개 · 공유 정의 {response.FamilyBlockDefinitions:N0}개 · 보·벽·바닥·기초·독립 주석 제외");
         foreach (var fallback in response.FamilyBlockFallbacks)
             response.Warnings.Add($"패밀리 개별 객체 유지: {fallback.Key} · {fallback.Value:N0}개");
     }

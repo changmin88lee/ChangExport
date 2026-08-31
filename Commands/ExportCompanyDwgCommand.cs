@@ -26,7 +26,8 @@ public sealed class ExportCompanyDwgCommand : IExternalCommand
             var layers = mapping.Read(settings.SelectedSetup, configuration);
             configuration.SelectedOutputSetup = settings.SelectedSetup; store.Save(configuration);
             using var progress = new ExportProgressForm((report, cancel, pump) => new RevitDwgExportService().Export(document,
-                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, report, cancel, pump, configuration.WideLineKeyword));
+                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, report, cancel, pump, configuration.WideLineKeyword,
+                configuration.AdditionalBlockFamilyIds));
             progress.ShowDialog();
             if (progress.Failure is not null) throw progress.Failure;
             var result = progress.Result ?? throw new InvalidOperationException("출력 결과가 없습니다.");

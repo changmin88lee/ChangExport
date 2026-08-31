@@ -17,7 +17,7 @@ public sealed class ChangExportSettingsForm : Form
     public IReadOnlyList<SheetSetDefinition> ResultSets => _sets.Select(s => s.Copy()).ToList();
 
     public ChangExportSettingsForm(string projectName, string keyword, IEnumerable<SheetSetDefinition> sets,
-        Action<string, IReadOnlyList<SheetSetDefinition>> save)
+        Action<string, IReadOnlyList<SheetSetDefinition>> save, Action<IWin32Window>? configureFamilies = null)
     {
         _sets = sets.Select(s => s.Copy()).ToList(); _save = save;
         UiTheme.Apply(this);
@@ -28,11 +28,17 @@ public sealed class ChangExportSettingsForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); Controls.Add(root);
 
-        var heading = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Margin = new Padding(0, 0, 0, 20) };
+        var heading = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 0, 0, 20) };
         heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        heading.Controls.Add(UiTheme.Heading("설정"));
+        heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        heading.Controls.Add(UiTheme.Heading("설정"), 0, 0);
         heading.Controls.Add(new Label { Text = "현재 프로젝트 · " + projectName, AutoEllipsis = true, Dock = DockStyle.Top,
-            Height = 24, ForeColor = Color.FromArgb(95, 103, 115), Margin = Padding.Empty }); root.Controls.Add(heading);
+            Height = 24, ForeColor = Color.FromArgb(95, 103, 115), Margin = Padding.Empty }, 0, 1); root.Controls.Add(heading);
+        if (configureFamilies != null)
+        {
+            var families = UiTheme.SecondaryButton("패밀리 블록…"); families.Width = 130; families.Anchor = AnchorStyles.Right;
+            families.Click += (_, _) => configureFamilies(this); heading.Controls.Add(families, 1, 0); heading.SetRowSpan(families, 2);
+        }
 
         var lines = Section("선 전역폭", "선 스타일 이름에 아래 문자열이 포함되면 전역폭 폴리선으로 출력합니다.");
         lines.Margin = new Padding(0, 0, 0, 16);

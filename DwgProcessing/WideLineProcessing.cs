@@ -15,15 +15,25 @@ public sealed partial class ManagedDwgProcessor
         public Dictionary<Entity, NativeLineDisplay> NativeDisplays { get; } = new(ReferenceEqualityComparer.Instance);
         public Dictionary<string, FamilyBlockInfo> Families { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, List<FamilyBlockSource>> FamilyIndex { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, List<FamilyBlockSource>> FamilyNames { get; } = new(StringComparer.Ordinal);
+        public List<FamilyBlockMatch> FamilyMatches { get; } = new();
         public GeometryContext(BridgeRequest request)
         {
             Request = request;
             foreach (var family in request.FamilySources)
-            foreach (var prefix in family.NativePrefixes)
             {
-                string key = FamilyKey(prefix);
-                if (!FamilyIndex.TryGetValue(key, out var matches)) FamilyIndex[key] = matches = new();
-                if (!matches.Contains(family)) matches.Add(family);
+                foreach (var prefix in family.NativePrefixes)
+                {
+                    string key = FamilyKey(prefix);
+                    if (!FamilyIndex.TryGetValue(key, out var matches)) FamilyIndex[key] = matches = new();
+                    if (!matches.Contains(family)) matches.Add(family);
+                }
+                foreach (var label in family.NativeLabels)
+                {
+                    string key = FamilyNameKey(label);
+                    if (!FamilyNames.TryGetValue(key, out var matches)) FamilyNames[key] = matches = new();
+                    if (!matches.Contains(family)) matches.Add(family);
+                }
             }
         }
     }
