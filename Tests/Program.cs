@@ -28,6 +28,7 @@ internal static class Program
         {
             if (args.Length > 0 && args[0] == "dwg")
             { IndependentDwg(output, args[2]); CustomLayerRegression.Run(output, Check); RevitSheetRegression.Run(output, Check, Near); }
+            else if (args.Length > 0 && args[0] == "custom") CustomLayerRegression.Run(output, Check);
             else if (args.Length > 0 && args[0] == "editable") { RevitSheetRegression.Run(output, Check, Near); EditableModelRegression.Run(output, Check, Near); }
             else if (args.Length > 0 && args[0] == "performance") { PerformanceRegression.Run(output, args[2], args[3], Check); PreparationQueueRegression.Run(args[2], Check); }
             else if (args.Length > 0 && args[0] == "compare-real") PerformanceRegression.CompareRuns(args[2], args[3], Check);
@@ -35,6 +36,8 @@ internal static class Program
             else if (args.Length > 0 && args[0] == "geometry") GeometryOptionsRegression.Run(output, Check, Near, args.Length > 2 ? args[2] : null);
             else if (args.Length > 0 && args[0] == "families") FamilyRecognitionRegression.Run(output, Check, args.Length > 2 ? args[2] : null);
             else if (args.Length > 0 && args[0] == "arcs") ArcRotationRegression.Run(output, Check, args.Length > 2 ? args[2] : null, args.Length > 3 ? args[3] : null);
+            else if (args.Length > 0 && args[0] == "fills-real") FillAppearanceRegression.Run(output, args[2], Check);
+            else if (args.Length > 0 && args[0] == "inspect") InspectDrawings(output, args[2]);
             else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { success = true, checks = _checks, mode = args.FirstOrDefault() ?? "managed", time = DateTimeOffset.Now }));
@@ -74,6 +77,33 @@ internal static class Program
                 OutputPath = Path.Combine(output, direction + ".dwg") }, flats[0], output);
             Check(result.Placements.Count == flats.Count, "Every sheet in merged real-data set");
         }
+    }
+
+    private static void InspectDrawings(string output, string root)
+    {
+        var records = Directory.EnumerateFiles(root, "*.dwg", SearchOption.AllDirectories).Select(path =>
+        {
+            var document = ACadSharp.IO.DwgReader.Read(path);
+            var entities = document.BlockRecords.SelectMany(block => block.Entities).ToArray();
+            return new
+            {
+                path,
+                entities = entities.GroupBy(entity => entity.ObjectName).OrderBy(group => group.Key)
+                    .ToDictionary(group => group.Key, group => group.Count()),
+                wipeouts = entities.OfType<ACadSharp.Entities.Wipeout>().Select(w => new
+                {
+                    layer = w.Layer.Name, w.InsertPoint, w.UVector, w.VVector, w.Size,
+                    clip = w.ClipBoundaryVertices.ToArray()
+                }).ToArray(),
+                hatches = entities.OfType<ACadSharp.Entities.Hatch>().Select(h => new
+                {
+                    layer = h.Layer.Name, h.IsSolid, h.PatternScale, h.PatternAngle,
+                    pattern = h.Pattern?.Name, color = new { h.Color.R, h.Color.G, h.Color.B, h.Color.IsByLayer, h.Color.IsByBlock }, paths = h.Paths.Count
+                }).ToArray()
+            };
+        }).ToArray();
+        File.WriteAllText(Path.Combine(output, "drawing-inspection.json"), JsonSerializer.Serialize(records, new JsonSerializerOptions { WriteIndented = true }));
+        _checks += records.Length;
     }
 
     private static void Managed(string output)

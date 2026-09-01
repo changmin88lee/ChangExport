@@ -6,13 +6,23 @@ namespace ChangExport.Standards;
 
 public sealed class RevitLayerMappingService
 {
+    // Revit does not plot the built-in <Invisible Lines> style. Give that row a
+    // private native-export layer so the managed stage can remove it without
+    // deleting unrelated entities that a user mapped to the same final layer.
+    internal const string InvisibleLineExportLayer = "CE__INVISIBLE_LINES__DO_NOT_EXPORT";
+
     private readonly Document _document;
     private List<RevitLayerRow>? _catalog;
     public RevitLayerMappingService(Document document) => _document = document;
     public static IReadOnlyList<string> SetupNames(RevitExportConfiguration config) => new[] { string.Empty }
         .Concat(config.OutputSetups.Select(s => s.SetupName).Where(n => n.Length > 0)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-    public DWGExportOptions CreateOptions(string setupName) => new() { LayerMapping = "AIA" };
+    public DWGExportOptions CreateOptions(string setupName) => new()
+    {
+        LayerMapping = "AIA",
+        Colors = ExportColorMode.TrueColorPerView,
+        PropOverrides = PropOverrideMode.ByEntity
+    };
 
     public List<RevitLayerRow> Read(string setupName, RevitExportConfiguration config)
     {
@@ -57,10 +67,11 @@ public sealed class RevitLayerMappingService
             bool exists = table.ContainsKey(key);
             using ExportLayerInfo value = exists ? table[key] : new ExportLayerInfo();
             value.CategoryType = Enum.TryParse<LayerCategoryType>(row.CategoryGroup, out var group) ? group : LayerCategoryType.Model;
-            value.LayerName = row.Layer;
-            value.ColorNumber = row.Color;
-            value.CutLayerName = row.CutLayer;
-            value.CutColorNumber = row.CutColor;
+            bool invisible = IsInvisibleLineRow(row);
+            value.LayerName = invisible ? InvisibleLineExportLayer : row.Layer;
+            value.ColorNumber = invisible ? 7 : row.Color;
+            value.CutLayerName = invisible ? InvisibleLineExportLayer : row.CutLayer;
+            value.CutColorNumber = invisible ? 7 : row.CutColor;
             using var modifier = new LayerModifier(ModifierType.Category, "");
             value.SetLayerModifiers(new List<LayerModifier> { modifier });
             value.SetCutLayerModifiers(new List<LayerModifier> { modifier });
@@ -68,6 +79,16 @@ public sealed class RevitLayerMappingService
         }
         options.SetExportLayerTable(table);
         return options;
+    }
+
+    internal static List<string> InternalExcludedLayers(IEnumerable<RevitLayerRow> rows) =>
+        rows.Any(IsInvisibleLineRow) ? new List<string> { InvisibleLineExportLayer } : new List<string>();
+
+    internal static bool IsInvisibleLineRow(RevitLayerRow row)
+    {
+        static string Normalize(string value) => new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+        string name = Normalize(string.IsNullOrWhiteSpace(row.Subcategory) ? row.Category : row.Subcategory);
+        return name is "보이지않는선" or "invisiblelines" or "invisibleline";
     }
 
     public static IReadOnlyList<string> Validate(IEnumerable<RevitLayerRow> rows)

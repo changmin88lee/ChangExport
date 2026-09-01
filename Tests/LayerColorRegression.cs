@@ -35,10 +35,13 @@ internal static class LayerColorRegression
         var document = DwgReader.Read(target);
         check(document.Entities.Count == 13555 && response.PaperEntityCount == 0, "Actual two-sheet model-space entity count retained");
         var walls = document.Entities.Where(e => e.Layer.Name == "벽_하지재_절단").ToArray();
-        check(walls.Length == 186 && walls.All(e => e.Color.IsByLayer && e.Layer.Color.Index == 7), "All 186 reported red wall lines now follow the white layer");
-        check(document.Entities.All(e => e.Color.IsByLayer && e.Layer.Color.Index == 7), "Every final entity follows the saved default, including other forced colors");
-        check(prepared.Sum(p => p.Response.NormalizedEntityColors) >= 1343, "Previously overridden actual entities are accounted for");
-        PerformanceRegression.Compare(snapshot, target, check, ignoreColors: true);
+        check(walls.Length == 186 && walls.Where(e => e is not (Hatch or Solid or Wipeout)).All(e => e.Color.IsByLayer && e.Layer.Color.Index == 7),
+            "Reported wall linework follows the white layer while fill appearance remains independent");
+        check(document.Entities.Where(e => e is not (Hatch or Solid or Wipeout)).All(e => e.Color.IsByLayer && e.Layer.Color.Index == 7),
+            "Every non-fill final entity follows the saved default layer color");
+        check(prepared.Sum(p => p.Response.NormalizedEntityColors + p.Response.PreservedFillColors) >= 1343,
+            "Previously overridden actual entities are accounted for as normalized linework or preserved fills");
+        PerformanceRegression.Compare(snapshot, target, check, ignoreColors: true, normalizePeriodicAngles: true);
         check(Convert.ToHexString(SHA256.HashData(ReadShared(original))) == hash
             && sourceHashes.All(p => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(p.Key))) == p.Value), "All original final and native DWGs unchanged");
         File.WriteAllText(Path.Combine(output, "color-result.json"), JsonSerializer.Serialize(new { target, response,
@@ -55,6 +58,8 @@ internal static class LayerColorRegression
     {
         var source = DwgRegression.Sheet(ACadVersion.AC1024);
         foreach (var entity in source.BlockRecords.SelectMany(b => b.Entities)) entity.Color = new Color(10);
+        var invisibleLayer = new Layer(RevitLayerMappingService.InvisibleLineExportLayer); source.Layers.Add(invisibleLayer);
+        source.Entities.Add(new Line { Layer = invisibleLayer, StartPoint = new XYZ(1, 1, 0), EndPoint = new XYZ(9, 9, 0) });
         var dim = source.Entities.OfType<Dimension>().Single();
         var changed = (DimensionStyle)dim.Style.Clone(); changed.TextColor = new Color(50); changed.DimensionLineColor = new Color(10);
         changed.ExtensionLineColor = new Color(8); changed.ArrowSize = 9; dim.SetDimensionOverride(changed);
@@ -65,10 +70,18 @@ internal static class LayerColorRegression
         DwgWriter.Write(input, source);
         var request = new BridgeRequest { Operation = "Flatten", UseLayerColors = true, OutputPath = target,
             LayerStyles = source.Layers.Select(l => new LayerAppearance { Layer = l.Name, Color = 7 }).ToList(),
+            ExcludedLayers = new() { RevitLayerMappingService.InvisibleLineExportLayer },
             ColorRemaps = new() { new() { MarkerAci = 200, Layer = "CUSTOM-P", Color = 3, RuleId = "type" }, new() { MarkerAci = 201, Layer = "CUSTOM-C", Color = 5, RuleId = "type" } } };
-        new ManagedDwgProcessor().Run(request, input, output);
+        var response = new ManagedDwgProcessor().Run(request, input, output);
         var saved = DwgReader.Read(target); var all = saved.BlockRecords.SelectMany(b => b.Entities).ToArray();
-        check(all.All(e => e.Color.IsByLayer), "Nested line, hatch, text, dimension and insert colors follow layers");
+        var fills = all.Where(e => e is Hatch or Solid).ToArray();
+        check(fills.Length > 0 && fills.All(e => !e.Color.IsByLayer && e.Color.R == new Color(10).R && e.Color.G == new Color(10).G && e.Color.B == new Color(10).B),
+            "Hatch and solid fill colors remain explicit view colors independent of layer ACI");
+        check(all.Where(e => e is not (Hatch or Solid or Wipeout)).All(e => e.Color.IsByLayer),
+            "Non-fill line, text, dimension and insert colors continue to follow layers");
+        check(response.ExcludedEntities == 1
+            && !all.Any(e => e.Layer.Name == RevitLayerMappingService.InvisibleLineExportLayer),
+            $"Revit invisible-line geometry is removed: excluded={response.ExcludedEntities}, remaining={all.Count(e => e.Layer.Name == RevitLayerMappingService.InvisibleLineExportLayer)}");
         check(saved.Layers["CUSTOM-P"].Color.Index == 3 && saved.Layers["CUSTOM-C"].Color.Index == 5
             && all.OfType<Line>().Any(e => e.Layer.Name == "CUSTOM-P") && all.OfType<Line>().Any(e => e.Layer.Name == "CUSTOM-C"),
             "Projection and cut filter markers are resolved before normalization; custom colors are retained");

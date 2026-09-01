@@ -19,6 +19,7 @@ namespace ChangExport.DwgProcessing
         public Dictionary<string, int> ExpectedRuleMatches { get; set; } = new();
         public List<WideLineLayer> WideLineLayers { get; set; } = new();
         public List<FamilyBlockSource> FamilySources { get; set; } = new();
+        public List<string> ExcludedLayers { get; set; } = new();
     }
 
     public sealed class WideLineLayer
@@ -89,6 +90,9 @@ namespace ChangExport.DwgProcessing
         public Dictionary<string, int> CustomRuleEntityCounts { get; set; } = new();
         public Dictionary<string, double> TimingsMs { get; set; } = new();
         public int NormalizedEntityColors { get; set; }
+        public int PreservedFillColors { get; set; }
+        public int PreservedMaskingEntities { get; set; }
+        public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }
         public int WideLineSkipped { get; set; }
         public Dictionary<string, int> WideLineStyleCounts { get; set; } = new();

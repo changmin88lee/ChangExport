@@ -89,7 +89,7 @@ public sealed partial class ManagedDwgProcessor
         {
             var clone = (Entity)member.Clone();
             TransformEditable(clone, new Transform(inverse), ref dimension);
-            if (useLayerColors) { clone.Color = Color.ByLayer; clone.BookColor = null; }
+            if (useLayerColors && !IsRevitFillDisplay(clone) && !IsRevitMask(clone)) { clone.Color = Color.ByLayer; clone.BookColor = null; }
             local.Add(clone);
         }
         string label = new(info.Label.Select(c => "<>/\\\":;?*|=,".Contains(c) ? '_' : c).ToArray());
@@ -154,6 +154,7 @@ public sealed partial class ManagedDwgProcessor
         {
             document.ModelSpace.Entities.Clear();
             foreach (var entity in rebuilt) document.Entities.Add(entity);
+            PreserveMaskDrawOrder(document.ModelSpace, rebuilt);
         }
         // Remove only unused definitions made by this operation, never source/user blocks.
         foreach (var block in document.BlockRecords.ToArray())

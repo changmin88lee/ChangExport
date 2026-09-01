@@ -97,9 +97,11 @@ internal static class TemporaryFilterExport
                         if (rule == null) continue;
                         var marker = markers[rule.RuleId];
                         using var settings = view.GetElementOverrides(element.Id);
-                        settings.SetProjectionLineColor(marker.Projection).SetCutLineColor(marker.Cut)
-                            .SetSurfaceForegroundPatternColor(marker.Projection).SetSurfaceBackgroundPatternColor(marker.Projection)
-                            .SetCutForegroundPatternColor(marker.Cut).SetCutBackgroundPatternColor(marker.Cut);
+                        // Marker colors are only a private channel for assigning linework
+                        // to a custom layer. Pattern colors must remain exactly as the
+                        // source view displays them; hatch entities are intentionally not
+                        // inherited into the marker remap in the managed DWG stage.
+                        settings.SetProjectionLineColor(marker.Projection).SetCutLineColor(marker.Cut);
                         view.SetElementOverrides(element.Id, settings); result.MatchedElements[rule.RuleId]++;
                     }
                 }

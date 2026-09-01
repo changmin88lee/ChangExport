@@ -21,6 +21,12 @@ internal static class CustomLayerRegression
         var block = new BlockRecord("TYPE_RC_400");
         block.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(10, 0, 0) });
         block.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(0, 10, 0), Color = new ACadSharp.Color(201) });
+        var viewFill = new Hatch { IsSolid = true, Color = new ACadSharp.Color(12, 180, 44) };
+        viewFill.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+        {
+            new Hatch.BoundaryPath.Polyline(new[] { new XYZ(1, 1, 0), new XYZ(5, 1, 0), new XYZ(5, 5, 0), new XYZ(1, 5, 0) })
+        }));
+        block.Entities.Add(viewFill);
         var rgb = new ACadSharp.Color(200);
         source.Entities.Add(new Insert(block) { Color = new ACadSharp.Color(rgb.R, rgb.G, rgb.B) });
         source.PaperSpace.Entities.Add(new MText { Value = "시트 CE_TMP_TEST", Height = 2, InsertPoint = new XYZ(10, 10, 0) });
@@ -37,6 +43,8 @@ internal static class CustomLayerRegression
         var all = final.BlockRecords.SelectMany(b => b.Entities).ToList();
         check(all.Count(e => e is Line && e.Layer.Name == "S-RC") == 2, "Layer-color marker and nested true-color parent both remap");
         check(all.Count(e => e is Line && e.Layer.Name == "S-RC-CUT") == 1, "Cut marker overrides inherited projection marker");
+        check(all.OfType<Hatch>().Any(h => !h.Color.IsByLayer && h.Color.R == 12 && h.Color.G == 180 && h.Color.B == 44),
+            "Custom layer marker does not replace the Revit view color of a nested fill");
         check(all.Any(e => e is Line && e.Layer.Name == "S-COL"), "Unmatched category geometry retained");
         check(final.Layers["S-RC"].Color.Index == 3 && final.Layers["S-RC-CUT"].Color.Index == 1, "Target ACI colors persist in reopened DWG");
         check(all.OfType<MText>().Any(t => t.Value == "시트 AA-101"), "Temporary sheet identifier restored in DWG text");

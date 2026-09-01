@@ -40,5 +40,10 @@ internal static class OutputSetupRegression
         var store = new ExportConfigurationStore(Path.Combine(output, "independent-output-config.json")); store.Save(config); config = store.Load();
         check(RevitLayerMappingService.SetupNames(config).SequenceEqual(new[] { "", "구조 도면" }) && config.SelectedOutputSetup == "구조 도면", "Custom setup list and selection persist independently of Revit settings");
         check(config.Setups.Single().SetupName == "기존 Revit 설정", "Legacy profile data remains preserved");
+
+        var invisible = RevitCategoryCatalog.DefaultRow("선", "<보이지 않는 선>", "Annotation");
+        check(RevitLayerMappingService.IsInvisibleLineRow(invisible)
+            && RevitLayerMappingService.InternalExcludedLayers(new[] { invisible }).Single() == RevitLayerMappingService.InvisibleLineExportLayer,
+            "Revit invisible-line subcategory is recognized independently of its user layer");
     }
 }

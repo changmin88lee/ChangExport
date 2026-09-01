@@ -47,6 +47,7 @@ public sealed partial class ManagedDwgProcessor
             Entity entity = original is Insert context ? InsertContext(context) : (Entity)original.Clone();
             InheritDisplay(entity, parent);
             if (entity.IsInvisible || !entity.Layer.IsOn || entity.Layer.Flags.HasFlag(LayerFlags.Frozen)) return;
+            PreserveRevitFillAppearance(entity, parent, response);
             if (entity is Insert insert)
             {
                 var sourceInsert = (Insert)original;
@@ -54,6 +55,7 @@ public sealed partial class ManagedDwgProcessor
                 if (family is { Processed: true } && clips.Count == 0)
                 {
                     var clone = (Insert)original.Clone(); InheritDisplay(clone, parent);
+                    PreserveNestedRevitFillAppearance(clone, parent, response, new HashSet<BlockRecord>());
                     var ready = PlaceFamily(clone.Block, new Transform(transform.Matrix * InsertTransform(clone).Matrix));
                     ready.MatchProperties(clone);
                     output.Add(ready); return;
@@ -66,6 +68,7 @@ public sealed partial class ManagedDwgProcessor
                 {
                     insert = (Insert)original.Clone();
                     InheritDisplay(insert, parent);
+                    PreserveNestedRevitFillAppearance(insert, parent, response, new HashSet<BlockRecord>());
                     // Nonuniform/mirrored/tilted block transforms can turn circles into
                     // ellipses or shear nested geometry. Keep only this exceptional block.
                     insert.ApplyTransform(transform);
@@ -145,6 +148,7 @@ public sealed partial class ManagedDwgProcessor
 
         foreach (Entity entity in source.ModelSpace.GetSortedEntities()) Add(entity, initial, new(), null, 0);
         foreach (var entity in output) target.Entities.Add(entity);
+        PreserveMaskDrawOrder(target.ModelSpace, output);
         if (retained.Count > 0)
             response.Warnings.Add("경계 표현 보존: 잘림 경계를 가로지르는 " + string.Join(", ", retained.Select(p => $"{p.Key} {p.Value}개"))
                 + "는 해당 객체만 작은 잘림 블록으로 유지했습니다. 일반 선과 시트 전체는 블록으로 묶지 않습니다.");

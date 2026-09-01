@@ -1,12 +1,51 @@
 using System.Text;
 using ACadSharp;
 using ACadSharp.Entities;
+using ACadSharp.Tables;
 using Color = ACadSharp.Color;
 
 namespace ChangExport.DwgProcessing;
 
 public sealed partial class ManagedDwgProcessor
 {
+    private static bool IsRevitFillDisplay(Entity entity) => entity is Hatch or Solid;
+
+    private static bool IsRevitMask(Entity entity) => entity is Wipeout;
+
+    // Freeze the native Revit view color before final layer styles are applied.
+    // Explicit 24-bit RGB lets several differently colored fills share one CAD
+    // layer without the layer color changing their displayed appearance.
+    private static void PreserveRevitFillAppearance(Entity entity, Entity? parent, BridgeResponse response)
+    {
+        if (IsRevitMask(entity))
+        {
+            response.PreservedMaskingEntities++;
+            return;
+        }
+        if (!IsRevitFillDisplay(entity)) return;
+        Color color = entity.Color;
+        if (color.IsByLayer) color = entity.Layer.Color;
+        else if (color.IsByBlock)
+        {
+            color = parent == null || parent.Color.IsByLayer ? entity.Layer.Color : parent.Color;
+        }
+        entity.Color = new Color(color.R, color.G, color.B);
+        entity.BookColor = null;
+        response.PreservedFillColors++;
+    }
+
+    private static void PreserveNestedRevitFillAppearance(Entity entity, Entity? parent, BridgeResponse response, HashSet<BlockRecord> visited)
+    {
+        PreserveRevitFillAppearance(entity, parent, response);
+        BlockRecord? block = entity is Insert insert ? insert.Block : entity is Dimension dimension ? dimension.Block : null;
+        if (block == null || !visited.Add(block)) return;
+        foreach (Entity child in block.GetSortedEntities())
+        {
+            InheritDisplay(child, entity);
+            PreserveNestedRevitFillAppearance(child, entity, response, visited);
+        }
+    }
+
     // Called only on detached output data, after filter markers and block inheritance.
     internal static void NormalizeLayerColors(CadDocument document, BridgeResponse response, Action check)
     {
@@ -22,6 +61,7 @@ public sealed partial class ManagedDwgProcessor
 
         void Normalize(Entity entity)
         {
+            if (IsRevitFillDisplay(entity) || IsRevitMask(entity)) return;
             if (!entity.Color.IsByLayer || entity.BookColor != null) response.NormalizedEntityColors++;
             entity.Color = Color.ByLayer; entity.BookColor = null;
             if (entity is MText text) text.Value = RemoveInlineColors(text.Value);

@@ -73,7 +73,9 @@ internal static class ArcRotationRegression
         check(result.FamilyBlockReferences == 3 && result.FamilyBlockDefinitions == 2, "Existing title/bicycle policy unchanged");
         check(corrected.Entities.Count == previous.Entities.Count, "Actual v4 entity count unchanged");
         check(corrected.Entities.OfType<LwPolyline>().Count(p => Math.Abs(p.ConstantWidth - 240) < 1e-6) == 101, "101 existing 240 mm wide lines retained");
-        check(corrected.Layers.All(l => l.Color.Index == 7) && corrected.BlockRecords.SelectMany(b => b.Entities).All(e => e.Color.IsByLayer), "All layer/entity colors retained");
+        check(corrected.Layers.All(l => l.Color.Index == 7)
+            && corrected.BlockRecords.SelectMany(b => b.Entities).Where(e => e is not (Hatch or Solid or Wipeout)).All(e => e.Color.IsByLayer),
+            "Layer and non-fill entity colors retained while Revit fills keep explicit view colors");
         var diagnostics = new List<object>(); int swings = 0, previouslyWrong = 0;
         for (int sheetIndex = 0; sheetIndex < sheets.Length; sheetIndex++)
         {

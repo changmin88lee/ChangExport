@@ -82,6 +82,7 @@ public sealed partial class ManagedDwgProcessor
                     if (child != null && visited.Add(child)) foreach (Entity e in child.Entities) Relayer(e, visited);
                 }
                 if (block.Entities.Count != 0) throw new InvalidDataException("외부 참조 블록에 예상하지 못한 로컬 객체가 있습니다: " + block.Name);
+                var ordered = new List<Entity>();
                 foreach (Entity entity in reference.ModelSpace.GetSortedEntities())
                 {
                     Entity clone = (Entity)entity.Clone();
@@ -90,7 +91,9 @@ public sealed partial class ManagedDwgProcessor
                     // viewport selection, so shaded geometry cannot stop another 2D view.
                     RenameReferenceBlocks(clone, prefix, new HashSet<BlockRecord>());
                     block.Entities.Add(clone);
+                    ordered.Add(clone);
                 }
+                PreserveMaskDrawOrder(block, ordered);
                 block.BlockEntity.BasePoint = reference.Header.ModelSpaceInsertionBase;
                 block.Flags &= ~(BlockTypeFlags.XRef | BlockTypeFlags.XRefOverlay | BlockTypeFlags.XRefDependent | BlockTypeFlags.XRefResolved | BlockTypeFlags.Referenced);
                 block.BlockEntity.XRefPath = "";
@@ -195,7 +198,11 @@ public sealed partial class ManagedDwgProcessor
         }
         void Visit(Entity e, ColorLayerRemap? inherited, HashSet<BlockRecord> visited)
         {
-            var map = Marker(e.Color.IsByLayer ? e.Layer.Color : e.Color) ?? inherited;
+            // Fill and masking graphics carry the source view appearance. Never let
+            // a temporary linework marker recolor them or flow into them through a
+            // parent INSERT; their layer is allowed to remain category based.
+            bool preserveAppearance = IsRevitFillDisplay(e) || IsRevitMask(e);
+            var map = preserveAppearance ? null : Marker(e.Color.IsByLayer ? e.Layer.Color : e.Color) ?? inherited;
             if (map != null)
             {
                 if (!rewritten.Layers.TryGetValue(map.Layer, out Layer layer))
@@ -215,10 +222,12 @@ public sealed partial class ManagedDwgProcessor
                 foreach (Entity child in block.Entities) Visit(child, map, visited);
             }
         }
-        foreach (Entity source in document.Entities)
+        var ordered = new List<Entity>();
+        foreach (Entity source in document.ModelSpace.GetSortedEntities())
         {
-            var clone = (Entity)source.Clone(); CaptureWidths(clone, geometry); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone);
+            var clone = (Entity)source.Clone(); CaptureWidths(clone, geometry); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone); ordered.Add(clone);
         }
+        PreserveMaskDrawOrder(rewritten.ModelSpace, ordered);
         foreach (var map in request.ColorRemaps)
             response.Warnings.Add($"필터 레이어 '{map.Layer}' / ACI {map.Color} · DWG 객체 {counts[map.MarkerAci]:N0}개 반영");
         response.CustomRuleEntityCounts = request.ColorRemaps.GroupBy(m => m.RuleId).ToDictionary(g => g.Key, g => g.Sum(m => counts[m.MarkerAci]));

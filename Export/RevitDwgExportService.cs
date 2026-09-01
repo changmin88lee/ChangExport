@@ -26,6 +26,7 @@ public sealed class RevitDwgExportService
         options.TargetUnit = ExportUnit.Millimeter;
         var wideLines = ExportGeometryOptions.ConfigureWideLines(options, layers, wideLineKeyword);
         var blockSources = ExportGeometryOptions.ReadBlockSources(document);
+        var excludedLayers = RevitLayerMappingService.InternalExcludedLayers(layers);
         try
         {
             for (int setIndex = 0; setIndex < sets.Count; setIndex++)
@@ -61,7 +62,8 @@ public sealed class RevitDwgExportService
                         if (!success || !File.Exists(Path.Combine(nativeDirectory, "sheet.dwg"))) throw new IOException("Revit이 시트 DWG를 생성하지 못했습니다.");
                         CheckCancel(cancel);
                         var request = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = true,
-                            LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = blockSources };
+                            LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = blockSources,
+                            ExcludedLayers = excludedLayers };
                         string input = Path.Combine(nativeDirectory, "sheet.dwg");
                         if (layers.Any(r => r.IsCustom))
                         {
@@ -99,6 +101,7 @@ public sealed class RevitDwgExportService
                         var conversion = entry.Drawing.Response;
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
                             conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors,
+                            conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.ExcludedEntities,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
                             conversion.FamilyBlockFallbacks, conversion.FamilyBlockMatches });
                         item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {entry.Sheet}: {w}"));
@@ -109,7 +112,8 @@ public sealed class RevitDwgExportService
                     stage = "세트 모형공간 배치";
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
                     var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
-                        Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, UseLayerColors = true, LayerStyles = RevitLayerMappingService.GetAppearances(layers) },
+                        Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, UseLayerColors = true,
+                        LayerStyles = RevitLayerMappingService.GetAppearances(layers), ExcludedLayers = excludedLayers },
                         prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
                     foreach (var timing in merged.TimingsMs) item.TimingsMs[timing.Key] = timing.Value;
                     CheckCancel(cancel);
@@ -132,7 +136,9 @@ public sealed class RevitDwgExportService
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
                 addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Model millimeters; sheet scaled by largest 2D viewport denominator",
                 outputSetupSource = "ChangExport", categoryRowCount = layers.Count(r => !r.IsCustom), intermediateDwgWritten = false,
-                entityColorPolicy = "ByLayer after custom filter remapping", layerColors = RevitLayerMappingService.GetAppearances(layers),
+                entityColorPolicy = "Revit TrueColor for hatch/solid fills; masking as WIPEOUT; other entities ByLayer after custom filter remapping",
+                invisibleLinePolicy = "Revit <Invisible Lines> removed on private staging layer",
+                layerColors = RevitLayerMappingService.GetAppearances(layers),
                 wideLineKeyword, wideLineLayers = wideLines, wideLineWidthSource = "Native Revit DWG lineweight in paper mm × sheet scale",
                 familyBlockPolicy = "Automatic fixed-geometry loadable families and Revit detail groups; excludes in-place, path/sketch/two-level/adaptive families, structural framing/columns, curtain wall and railing system components",
                 blockSources = blockSources.Select(f => new { f.Identity, f.Label, f.Category, f.SourceKind, f.PlacementType,

@@ -33,6 +33,7 @@ public sealed partial class ManagedDwgProcessor
         }
         else document = Merge(request, response, Check);
         if (request.RevitSheet) document = EditableModel(document, response, Check);
+        ApplyLayerStyles(document, request.LayerStyles);
         if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
         return SavePrepared(document, response, request.OutputPath, workingDirectory, Check);
     }
@@ -50,6 +51,7 @@ public sealed partial class ManagedDwgProcessor
         response.TimingsMs["read"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers, d => TagFamilyBlocks(d, geometry));
+        RemoveExcludedGeometry(source, request.ExcludedLayers, response);
         response.TimingsMs["bindReferences"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         if (request.RevitSheet)
         {
@@ -60,10 +62,10 @@ public sealed partial class ManagedDwgProcessor
         RestoreReferenceLayerNames(document, referenceLayers, response.Warnings);
         document = ApplyCustomRemaps(document, request, response, geometry);
         RestoreWideLayers(document, geometry);
-        ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
-            .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         response.TimingsMs["flattenAndLayers"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         if (request.RevitSheet) document = EditableModel(document, response, Check, geometry: geometry);
+        ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
+            .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         // Marker colors must be consumed by ApplyCustomRemaps before removing overrides.
         if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
         DeduplicateFamilies(document, response, geometry);
@@ -252,6 +254,7 @@ public sealed partial class ManagedDwgProcessor
         };
         CadDocument target = CreateOutput(source);
         var sheet = new BlockRecord("CE_SHEET") { Units = UnitsType.Millimeters };
+        var sheetOrder = new List<Entity>();
         var omitted = new List<Viewport>();
         bool Active(Viewport v) => revitSheet ? IsEnabledViewport(v) : IsActiveView(v);
         bool hasOmittedViews = layout.AssociatedBlock.Entities.OfType<Viewport>().Any(v => Active(v) && OmitViewport(v));
@@ -269,13 +272,14 @@ public sealed partial class ManagedDwgProcessor
                     warnings.Add($"생략: 원근·음영 뷰포트 {viewport.Handle:X}. 도곽·주석과 다른 뷰포트의 출력은 계속했습니다.");
                     continue;
                 }
-                sheet.Entities.Add(ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews, revitSheet ? lineworkBounds : null));
+                var converted = ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews, revitSheet ? lineworkBounds : null);
+                sheet.Entities.Add(converted); sheetOrder.Add(converted);
             }
             else
             {
                 Entity clone = (Entity)entity.Clone();
                 clone = PrepareClone(clone, "CE_PAPER_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>(), warnings);
-                sheet.Entities.Add(clone);
+                sheet.Entities.Add(clone); sheetOrder.Add(clone);
             }
         }
         if (!sheet.Entities.Any(e => !e.IsInvisible && e.Layer.IsOn && !e.Layer.Flags.HasFlag(LayerFlags.Frozen)) && omitted.Count > 0)
@@ -283,11 +287,13 @@ public sealed partial class ManagedDwgProcessor
             // Keep an otherwise empty sheet in the set instead of losing its slot.
             double left = omitted.Min(v => v.Center.X - v.Width / 2), right = omitted.Max(v => v.Center.X + v.Width / 2);
             double bottom = omitted.Min(v => v.Center.Y - v.Height / 2), top = omitted.Max(v => v.Center.Y + v.Height / 2);
-            sheet.Entities.Add(new LwPolyline(new[] { new XY(left, bottom), new XY(right, bottom), new XY(right, top), new XY(left, top) }
-                .Select(p => new LwPolyline.Vertex(p))) { IsClosed = true });
+            var outline = new LwPolyline(new[] { new XY(left, bottom), new XY(right, bottom), new XY(right, top), new XY(left, top) }
+                .Select(p => new LwPolyline.Vertex(p))) { IsClosed = true };
+            sheet.Entities.Add(outline); sheetOrder.Add(outline);
             warnings.Add("대체: 원근·음영 뷰만 있는 시트는 해당 뷰의 범위 사각형으로 세트 내 자리를 유지했습니다.");
         }
         if (sheet.Entities.Count == 0) throw new InvalidDataException("출력할 시트 내용이 없습니다.");
+        PreserveMaskDrawOrder(sheet, sheetOrder);
         target.Entities.Add(new Insert(sheet) { XScale = unitScale, YScale = unitScale, ZScale = unitScale });
         SetExtents(target);
         return target;
@@ -312,6 +318,7 @@ public sealed partial class ManagedDwgProcessor
         var block = new BlockRecord(prefix);
         // PSLTSCALE=1 keeps dash lengths in paper units despite the viewport scale.
         double lineScale = source.Header.PaperSpaceLineTypeScaling == SpaceLineTypeScaling.Normal ? 1 / viewport.ScaleFactor : 1;
+        var ordered = new List<Entity>();
         foreach (Entity entity in source.ModelSpace.GetSortedEntities())
         {
             check();
@@ -321,7 +328,9 @@ public sealed partial class ManagedDwgProcessor
             Entity clone = (Entity)entity.Clone();
             clone = PrepareClone(clone, prefix + "_", frozen, lineScale, new HashSet<BlockRecord>(), warnings, hasOmittedViews);
             block.Entities.Add(clone);
+            ordered.Add(clone);
         }
+        PreserveMaskDrawOrder(block, ordered);
         double angle = -viewport.TwistAngle;
         double scale = viewport.ScaleFactor;
         XYZ target = Rotate(viewport.ViewTarget, angle);
@@ -418,6 +427,7 @@ public sealed partial class ManagedDwgProcessor
             var order = block.CreateSortEntitiesTable(); order.Clear();
             for (int n = 0; n < ordered.Count; n++) order.Add(ordered[n], (ulong)n + 1);
         }
+        else PreserveMaskDrawOrder(block, ordered);
         return entity;
     }
 
@@ -432,6 +442,7 @@ public sealed partial class ManagedDwgProcessor
         {
             check();
             CadDocument source = prepared == null ? Read(request.Inputs[n], response.Warnings) : prepared[n].Document;
+            RemoveExcludedGeometry(source, request.ExcludedLayers, response);
             if (request.RevitSheet && target != null) IsolateConflictingStyles(source, target, n + 1, response.Warnings);
             if (source.Header.InsUnits != UnitsType.Millimeters || source.Layouts.Where(l => l.IsPaperSpace).Any(l => l.AssociatedBlock.Entities.Any(e => e is not Viewport)))
                 throw new InvalidDataException("병합 입력은 mm 단위의 모형공간 시트여야 합니다.");
@@ -440,6 +451,7 @@ public sealed partial class ManagedDwgProcessor
             if (target.Header.Version != source.Header.Version || Math.Abs(target.Header.LineTypeScale - source.Header.LineTypeScale) > Epsilon)
                 throw new InvalidDataException("서로 다른 DWG 버전/전역 선축척을 가진 시트는 병합할 수 없습니다.");
             var block = new BlockRecord("CE_SET_" + (n + 1)) { Units = UnitsType.Millimeters };
+            var ordered = new List<Entity>();
             foreach (Entity entity in source.ModelSpace.GetSortedEntities().ToArray())
             {
                 // Clone final leaf objects; removing them individually from an attached
@@ -447,7 +459,9 @@ public sealed partial class ManagedDwgProcessor
                 Entity clone = (Entity)entity.Clone();
                 clone = PrepareClone(clone, "CE_" + (n + 1) + "_", new HashSet<string>(StringComparer.OrdinalIgnoreCase), 1, new HashSet<BlockRecord>(), response.Warnings);
                 block.Entities.Add(clone);
+                ordered.Add(clone);
             }
+            PreserveMaskDrawOrder(block, ordered);
             Box box = Bounds(block.Entities);
             double x = request.Direction == "Horizontal" ? cursor : 0;
             double y = request.Direction == "Vertical" ? -cursor - box.Height : 0;
@@ -455,9 +469,33 @@ public sealed partial class ManagedDwgProcessor
             response.Placements.Add(new SheetPlacement { Source = request.Inputs[n], X = x, Y = y, Width = box.Width, Height = box.Height });
             cursor += (request.Direction == "Horizontal" ? box.Width : box.Height) + request.MarginMm;
         }
-        ApplyLayerStyles(target!, request.LayerStyles);
         SetExtents(target!);
         return target!;
+    }
+
+    private static void RemoveExcludedGeometry(CadDocument document, IEnumerable<string> excludedLayers, BridgeResponse response)
+    {
+        var excluded = excludedLayers.Where(n => !string.IsNullOrWhiteSpace(n)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (excluded.Count == 0) return;
+        bool IsExcluded(string name) => excluded.Contains(name) || excluded.Any(marker => name.EndsWith("|" + marker, StringComparison.OrdinalIgnoreCase));
+        foreach (BlockRecord block in document.BlockRecords.ToArray())
+        {
+            var ordered = block.GetSortedEntities().ToArray();
+            var retained = ordered.Where(entity => !IsExcluded(entity.Layer.Name)).ToArray();
+            if (retained.Length == ordered.Length) continue;
+            response.ExcludedEntities += ordered.Length - retained.Length;
+            block.Entities.Clear();
+            foreach (Entity entity in retained) block.Entities.Add(entity);
+            PreserveMaskDrawOrder(block, retained);
+        }
+    }
+
+    private static void PreserveMaskDrawOrder(BlockRecord block, IReadOnlyList<Entity> ordered)
+    {
+        if (!ordered.Any(entity => entity is Wipeout)) return;
+        var order = block.CreateSortEntitiesTable();
+        order.Clear();
+        for (int index = 0; index < ordered.Count; index++) order.Add(ordered[index], (ulong)index + 1);
     }
 
     private static void ApplyLayerStyles(CadDocument target, IEnumerable<LayerAppearance> styles)
@@ -501,6 +539,26 @@ public sealed partial class ManagedDwgProcessor
                 if (!left[n].Color.Equals(right[n].Color) || left[n].LineWeight != right[n].LineWeight
                     || Math.Abs(left[n].LineTypeScale - right[n].LineTypeScale) > Epsilon)
                     throw new InvalidDataException("DWG 객체의 색상·선가중치·선축척이 달라졌습니다.");
+                if (left[n] is Hatch beforeHatch && (right[n] is not Hatch afterHatch
+                    || beforeHatch.IsSolid != afterHatch.IsSolid || beforeHatch.Pattern?.Name != afterHatch.Pattern?.Name
+                    || Math.Abs(beforeHatch.PatternScale - afterHatch.PatternScale) > Epsilon
+                    || Math.Abs(Math.Sin(beforeHatch.PatternAngle) - Math.Sin(afterHatch.PatternAngle)) > Epsilon
+                    || Math.Abs(Math.Cos(beforeHatch.PatternAngle) - Math.Cos(afterHatch.PatternAngle)) > Epsilon
+                    || beforeHatch.Paths.Count != afterHatch.Paths.Count
+                    || beforeHatch.Paths.Where((path, pathIndex) => path.Edges.Count != afterHatch.Paths[pathIndex].Edges.Count
+                        || path.Edges.Where((edge, edgeIndex) => edge.Type != afterHatch.Paths[pathIndex].Edges[edgeIndex].Type).Any()).Any()))
+                    throw new InvalidDataException("DWG 해치의 패턴·각도·축척 또는 경계 형식이 달라졌습니다.");
+                if (left[n] is Wipeout beforeMask && (right[n] is not Wipeout afterMask
+                    || beforeMask.InsertPoint.DistanceFrom(afterMask.InsertPoint) > Epsilon
+                    || beforeMask.UVector.DistanceFrom(afterMask.UVector) > Epsilon || beforeMask.VVector.DistanceFrom(afterMask.VVector) > Epsilon
+                    || Math.Abs(beforeMask.Size.X - afterMask.Size.X) > Epsilon || Math.Abs(beforeMask.Size.Y - afterMask.Size.Y) > Epsilon
+                    || beforeMask.ShowImage != afterMask.ShowImage || beforeMask.ClippingState != afterMask.ClippingState
+                    || beforeMask.ClipType != afterMask.ClipType || beforeMask.ClipMode != afterMask.ClipMode
+                    || beforeMask.ClipBoundaryVertices.Count != afterMask.ClipBoundaryVertices.Count
+                    || beforeMask.ClipBoundaryVertices.Where((point, pointIndex) =>
+                        Math.Abs(point.X - afterMask.ClipBoundaryVertices[pointIndex].X) > Epsilon
+                        || Math.Abs(point.Y - afterMask.ClipBoundaryVertices[pointIndex].Y) > Epsilon).Any()))
+                    throw new InvalidDataException("DWG 마스킹 영역의 위치·크기·잘림 경계가 달라졌습니다.");
                 if (left[n] is Polyline3D outline && (right[n] is not Polyline3D savedOutline
                     || outline.IsClosed != savedOutline.IsClosed || outline.Vertices.Count != savedOutline.Vertices.Count
                     || outline.Vertices.Zip(savedOutline.Vertices).Any(pair => pair.First.Location.DistanceFrom(pair.Second.Location) > Epsilon)))
