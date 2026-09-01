@@ -17,9 +17,10 @@ public sealed class ManageSheetGroupsCommand : IExternalCommand
             var store = ExportConfigurationStore.ForDocument(document); var config = store.Load();
             var sheets = SheetSetService.ReadSheets(document);
             if (sheets.Count == 0) { TaskDialog.Show("창Export", "프로젝트에 출력 가능한 시트가 없습니다."); return Result.Cancelled; }
-            using var form = new SheetGroupManagerForm(sheets, SheetSetService.ReadSets(document, config, sheets));
+            using var form = new SheetGroupManagerForm(sheets, SheetSetService.ReadSets(document, config, sheets),
+                RevitLayerMappingService.TemplateChoices(config), config.SheetTemplateIds);
             if (form.ShowDialog() != System.Windows.Forms.DialogResult.OK) return Result.Cancelled;
-            config.SheetSets = form.ResultSets.ToList(); store.Save(config);
+            SheetSetService.ApplyAssignments(config, form.ResultSets, form.ResultAssignments); store.Save(config);
             return Result.Succeeded;
         }
         catch (Exception ex) { message = ex.Message; TaskDialog.Show("세트 저장 실패", ex.Message); return Result.Failed; }

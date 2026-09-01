@@ -35,6 +35,11 @@ internal static class SpacingRegression
         mixed.Select("a", false, false); mixed.Select("b", true, false);
         try { mixed.Combine("금지"); check(false, "Different-template sheets cannot be combined"); }
         catch (InvalidOperationException) { check(true, "Different-template sheets cannot be combined"); }
+        var assignedConfig = new RevitExportConfiguration();
+        SheetSetService.ApplyAssignments(assignedConfig, editor.Sets, new Dictionary<string, string> { ["a"] = "template", ["b"] = "template" });
+        check(assignedConfig.SheetSets.Single().TemplateId == "template"
+            && assignedConfig.SheetTemplateIds.Count == 2 && assignedConfig.SheetTemplateIds.Values.All(id => id == "template"),
+            "Standalone sheet-set save persists both set membership and per-sheet DWG template assignments");
 
         int saves = 0;
         void Save(string keyword, IReadOnlyList<SheetSetDefinition> sets)
