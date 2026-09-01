@@ -17,7 +17,7 @@ internal static class SpacingRegression
         string path = Path.Combine(output, "legacy-spacing.json"), legacy = JsonSerializer.Serialize(source);
         File.WriteAllText(path, legacy);
         var store = new ExportConfigurationStore(path); var config = store.Load();
-        check(config.SchemaVersion == 3 && config.SheetSets.All(s => s.MarginMm == 0), "Legacy settings migrate through plan-scope schema and existing horizontal/vertical sets start at zero");
+        check(config.SchemaVersion == 4 && config.SheetSets.All(s => s.MarginMm == 0), "Legacy settings migrate through template schema and existing horizontal/vertical sets start at zero");
         check(File.ReadAllText(path) == legacy && !File.Exists(path + ".bak"), "Loading does not rewrite the user profile");
         check(config.SelectedSetup == "기존 설정" && config.Setups[0].Layers[0].Layer == "S-WALL"
             && config.SheetSets[1].Direction == "Vertical" && config.SheetSets[0].SheetUniqueIds.SequenceEqual(new[] { "a", "b" }),
@@ -26,10 +26,15 @@ internal static class SpacingRegression
         store.Save(config); var saved = store.Load();
         check(saved.SheetSets[0].MarginMm == 10000 && saved.SheetSets[1].MarginMm == 750, "Explicit new spacing survives reload, including old default value");
         check(File.ReadAllText(path + ".bak") == legacy, "First explicit save backs up the original profile");
-        var editor = new SheetSetEditor(new[] { new SheetSetDefinition { Id = "a", SheetUniqueIds = new() { "a" } },
-            new SheetSetDefinition { Id = "b", SheetUniqueIds = new() { "b" } } });
+        var editor = new SheetSetEditor(new[] { new SheetSetDefinition { Id = "a", TemplateId = "template", SheetUniqueIds = new() { "a" } },
+            new SheetSetDefinition { Id = "b", TemplateId = "template", SheetUniqueIds = new() { "b" } } });
         editor.Select("a", false, false); editor.Select("b", true, false); editor.Combine("신규 세트");
-        check(editor.Sets.Single().MarginMm == 0, "New combined sets use zero spacing");
+        check(editor.Sets.Single().MarginMm == 0 && editor.Sets.Single().TemplateId == "template", "New combined sets preserve the shared template and use zero spacing");
+        var mixed = new SheetSetEditor(new[] { new SheetSetDefinition { Id = "a", TemplateId = "architecture", SheetUniqueIds = new() { "a" } },
+            new SheetSetDefinition { Id = "b", TemplateId = "structure", SheetUniqueIds = new() { "b" } } });
+        mixed.Select("a", false, false); mixed.Select("b", true, false);
+        try { mixed.Combine("금지"); check(false, "Different-template sheets cannot be combined"); }
+        catch (InvalidOperationException) { check(true, "Different-template sheets cannot be combined"); }
 
         int saves = 0;
         void Save(string keyword, IReadOnlyList<SheetSetDefinition> sets)

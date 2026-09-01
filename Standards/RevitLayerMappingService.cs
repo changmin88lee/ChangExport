@@ -16,11 +16,25 @@ public sealed class RevitLayerMappingService
     public RevitLayerMappingService(Document document) => _document = document;
     public static IReadOnlyList<string> SetupNames(RevitExportConfiguration config) => new[] { string.Empty }
         .Concat(config.OutputSetups.Select(s => s.SetupName).Where(n => n.Length > 0)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    public static IReadOnlyList<LayerTemplateChoice> TemplateChoices(RevitExportConfiguration config) => config.OutputSetups
+        .Select(s => new LayerTemplateChoice(s.SetupId, s.SetupName)).ToList();
+    public static ExportSetupEdits? FindTemplate(RevitExportConfiguration config, string idOrName) => config.OutputSetups
+        .FirstOrDefault(s => s.SetupId == idOrName) ?? config.OutputSetups.FirstOrDefault(s => s.SetupName == idOrName);
 
-    public static List<MaterialLayerRule> ReadMaterialRules(string setupName, RevitExportConfiguration config,
-        string viewScope = ViewLayerScope.ArchitecturePlan) => config.OutputSetups.FirstOrDefault(s => s.SetupName == setupName)?.MaterialRules?
-        .Where(r => string.IsNullOrEmpty(r.ViewScope) || r.ViewScope == viewScope)
-        .Select(r => { var copy = r.Copy(); copy.ViewScope = viewScope; return copy; }).ToList() ?? new();
+    public static List<MaterialLayerRule> ReadMaterialRules(string idOrName, RevitExportConfiguration config) =>
+        FindTemplate(config, idOrName)?.MaterialRules?.Select(r => { var copy = r.Copy(); copy.ViewScope = ""; return copy; }).ToList() ?? new();
+
+    public static List<MaterialLayerRule> RebindImportedMaterials(IEnumerable<MaterialLayerRule> rules, IEnumerable<MaterialChoice> materials)
+    {
+        var available = materials.Where(m => !string.IsNullOrWhiteSpace(m.UniqueId)).ToList();
+        return rules.Select(rule =>
+        {
+            var copy = rule.Copy(); copy.ViewScope = "";
+            var exact = available.FirstOrDefault(m => string.Equals(m.Name, copy.MaterialName, StringComparison.Ordinal));
+            copy.MaterialUniqueId = exact?.UniqueId ?? string.Empty;
+            return copy;
+        }).ToList();
+    }
 
     public DWGExportOptions CreateOptions(string setupName) => new()
     {
@@ -29,15 +43,13 @@ public sealed class RevitLayerMappingService
         PropOverrides = PropOverrideMode.ByEntity
     };
 
-    public List<RevitLayerRow> Read(string setupName, RevitExportConfiguration config, string viewScope = ViewLayerScope.ArchitecturePlan)
+    public List<RevitLayerRow> Read(string idOrName, RevitExportConfiguration config)
     {
         _catalog ??= RevitCategoryCatalog.Read(_document);
-        var savedRows = config.OutputSetups.FirstOrDefault(s => s.SetupName == setupName)?.Layers
-            .Where(r => string.IsNullOrEmpty(r.ViewScope) || r.ViewScope == viewScope)
-            .Select(r => { var copy = r.Copy(); copy.ViewScope = viewScope; return copy; }).ToList() ?? new();
-        var catalog = _catalog.Select(r => { var copy = r.Copy(); copy.ViewScope = viewScope; return copy; }).ToList();
+        var savedRows = FindTemplate(config, idOrName)?.Layers.Select(r => { var copy = r.Copy(); copy.ViewScope = ""; return copy; }).ToList() ?? new();
+        var catalog = _catalog.Select(r => { var copy = r.Copy(); copy.ViewScope = ""; return copy; }).ToList();
         var result = MergeCatalog(catalog, savedRows);
-        foreach (var row in result) row.ViewScope = viewScope;
+        foreach (var row in result) row.ViewScope = "";
         return result;
     }
 
@@ -105,7 +117,6 @@ public sealed class RevitLayerMappingService
     {
         var all = rows.ToList();
         var issues = new List<string>();
-        if (all.Any(r => !ViewLayerScope.IsValid(r.ViewScope, allowLegacy: true))) issues.Add("지원하지 않는 평면도 구분이 있습니다.");
         var appearances = new Dictionary<string, LayerAppearance>(StringComparer.OrdinalIgnoreCase);
         foreach (RevitLayerRow row in all.Where(r => r.HasChanges))
         {
@@ -130,7 +141,7 @@ public sealed class RevitLayerMappingService
                 appearances[layer] = style;
             }
         }
-        if (all.Where(r => r.IsCustom).GroupBy(r => (r.ViewScope, r.RuleId)).Any(g => g.Count() > 1)) issues.Add("중복된 필터 식별자가 있습니다.");
+        if (all.Where(r => r.IsCustom).GroupBy(r => r.RuleId).Any(g => g.Count() > 1)) issues.Add("중복된 필터 식별자가 있습니다.");
         foreach (var group in all.SelectMany(r => new[] { (r.Layer, r.Color, r.IsCustom), (r.CutLayer, r.CutColor, r.IsCustom) })
             .Where(v => !string.IsNullOrWhiteSpace(v.Item1) && v.Item2 is >= 1 and <= 255).GroupBy(v => v.Item1, StringComparer.OrdinalIgnoreCase))
             if (group.Select(v => v.Item2).Distinct().Count() > 1)
@@ -142,16 +153,14 @@ public sealed class RevitLayerMappingService
     {
         var all = rules.ToList();
         var issues = new List<string>();
-        if (all.Any(r => !ViewLayerScope.IsValid(r.ViewScope, allowLegacy: true))) issues.Add("재료 필터에 지원하지 않는 평면도 구분이 있습니다.");
         foreach (var rule in all)
         {
-            if (string.IsNullOrWhiteSpace(rule.MaterialUniqueId)) issues.Add("재료 필터에서 Revit 재료를 선택하세요.");
             if (!ValidLayerName(rule.Layer)) issues.Add($"{rule.Caption}: 재료 CAD 레이어 이름을 확인하세요.");
             if (rule.Color is < 1 or > 255) issues.Add($"{rule.Caption}: 재료 레이어 색상은 1~255입니다.");
         }
-        if (all.Where(r => r.MaterialUniqueId.Length > 0).GroupBy(r => (r.ViewScope, r.MaterialUniqueId)).Any(g => g.Count() > 1))
+        if (all.Where(r => !string.IsNullOrWhiteSpace(r.MaterialUniqueId)).GroupBy(r => r.MaterialUniqueId).Any(g => g.Count() > 1))
             issues.Add("같은 Revit 재료가 재료 필터에 두 번 지정되었습니다.");
-        if (all.GroupBy(r => (r.ViewScope, r.RuleId)).Any(g => g.Count() > 1)) issues.Add("중복된 재료 필터 식별자가 있습니다.");
+        if (all.GroupBy(r => r.RuleId).Any(g => g.Count() > 1)) issues.Add("중복된 재료 필터 식별자가 있습니다.");
         foreach (var group in all.Where(r => !string.IsNullOrWhiteSpace(r.Layer) && r.Color is >= 1 and <= 255)
             .GroupBy(r => r.Layer, StringComparer.OrdinalIgnoreCase))
             if (group.Select(r => r.Color).Distinct().Count() > 1)

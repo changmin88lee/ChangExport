@@ -35,22 +35,35 @@ internal static class OutputSetupRegression
             if (copy.Category == "벽" && !copy.IsCustom) copy.Layer = "S-WALL-STRUCTURAL-PLAN"; return copy; }).ToList();
         var material = new MaterialLayerRule { RuleId = "material-concrete", MaterialUniqueId = "material-uid-1", MaterialName = "콘크리트",
             ViewScope = ViewLayerScope.ArchitecturePlan, Layer = "A-MATL-CONC", Color = 8 };
-        var scopedFile = new OutputSetupFile { Name = "평면도별 설정", Layers = architectureRows.Concat(structuralRows).ToList(), MaterialRules = new() { material } };
-        string scopedPath = Path.Combine(output, "scoped-output.json"); scopedFile.Save(scopedPath); var scopedLoaded = OutputSetupFile.Load(scopedPath);
-        check(scopedLoaded.Layers.Select(r => r.ViewScope).Distinct().ToHashSet().SetEquals(new[] { ViewLayerScope.ArchitecturePlan, ViewLayerScope.StructuralPlan })
-            && scopedLoaded.MaterialRules.Single().MaterialUniqueId == "material-uid-1",
-            "Portable output setup preserves independent plan scopes and exact Revit material identity");
-        var scopedConfig = new RevitExportConfiguration { OutputSetups = new() { new() { SetupName = "평면도별 설정", Layers = scopedLoaded.Layers,
-            MaterialRules = scopedLoaded.MaterialRules } } };
-        check(RevitLayerMappingService.ReadMaterialRules("평면도별 설정", scopedConfig, ViewLayerScope.ArchitecturePlan).Single().MaterialName == "콘크리트"
-            && RevitLayerMappingService.ReadMaterialRules("평면도별 설정", scopedConfig, ViewLayerScope.StructuralPlan).Count == 0,
-            "Material filter is isolated to its selected plan scope");
+        var scopedConfig = new RevitExportConfiguration { SchemaVersion = 3, OutputSetups = new() { new() { SetupName = "평면도별 설정",
+            Layers = architectureRows.Concat(structuralRows).ToList(), MaterialRules = new() { material } } },
+            SheetSets = new() { new() { Name = "기존 세트", TemplateId = "legacy", SheetUniqueIds = new() { "sheet-a" } } } };
+        string scopedPath = Path.Combine(output, "scoped-config.json"); File.WriteAllText(scopedPath, System.Text.Json.JsonSerializer.Serialize(scopedConfig));
+        var migrated = new ExportConfigurationStore(scopedPath).Load();
+        check(migrated.SchemaVersion == 4 && migrated.OutputSetups.Count == 2
+            && migrated.OutputSetups.All(s => s.Layers.All(r => r.ViewScope.Length == 0) && s.MaterialRules.All(r => r.ViewScope.Length == 0))
+            && migrated.OutputSetups.Any(s => s.SetupName.EndsWith("구조평면도") && s.Layers.Any(r => r.Layer == "S-WALL-STRUCTURAL-PLAN")),
+            "V18 plan scopes migrate to separate freely named DWG layer templates");
+        check(migrated.SheetSets.Single().TemplateId.Length == 0 && migrated.SheetTemplateIds.Count == 0,
+            "Legacy sheet membership is preserved but no template assignment is guessed");
+        var portableMaterial = new OutputSetupFile { Name = "재료 템플릿", Layers = loaded.Layers,
+            MaterialRules = new() { new() { MaterialUniqueId = "", MaterialName = "다른 프로젝트 재료", Layer = "A-MATL", Color = 42 } } };
+        string materialPath = Path.Combine(output, "material-template.json"); portableMaterial.Save(materialPath); var importedMaterial = OutputSetupFile.Load(materialPath).MaterialRules.Single();
+        check(importedMaterial.MaterialUniqueId.Length == 0 && importedMaterial.MaterialName == "다른 프로젝트 재료"
+            && importedMaterial.Layer == "A-MATL" && importedMaterial.Color == 42,
+            "Portable material templates retain material name, layer and color when the current project has no exact material");
+        var rebound = RevitLayerMappingService.RebindImportedMaterials(new[] { importedMaterial,
+            new MaterialLayerRule { MaterialName = "콘크리트", MaterialUniqueId = "old-project-id", Layer = "A-CONC", Color = 8 } },
+            new[] { new MaterialChoice("current-project-id", 12, "콘크리트") });
+        check(rebound[0].MaterialUniqueId.Length == 0 && rebound[0].Layer == "A-MATL" && rebound[0].Color == 42
+            && rebound[1].MaterialUniqueId == "current-project-id",
+            "Material import binds only an exact current-project name while retaining unresolved layer and color data");
         var duplicateMaterial = material.Copy(); duplicateMaterial.RuleId = "other";
         check(RevitLayerMappingService.ValidateMaterialRules(new[] { material, duplicateMaterial }).Count > 0,
             "The same exact Revit material cannot be assigned twice in one plan scope");
         duplicateMaterial.ViewScope = ViewLayerScope.CeilingPlan;
-        check(RevitLayerMappingService.ValidateMaterialRules(new[] { material, duplicateMaterial }).Count == 0,
-            "The same Revit material can have an independent ceiling-plan rule");
+        check(RevitLayerMappingService.ValidateMaterialRules(new[] { material, duplicateMaterial }).Count > 0,
+            "The same exact Revit material cannot be duplicated inside one DWG layer template");
         string original = File.ReadAllText(path);
         loaded.Layers[0].Color = 256;
         try { loaded.Save(path); check(false, "Invalid color rejected"); } catch (InvalidDataException) { check(true, "Invalid color rejected"); }

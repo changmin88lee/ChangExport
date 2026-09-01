@@ -6,14 +6,14 @@ namespace ChangExport.Standards;
 public sealed class OutputSetupFile
 {
     public string Format { get; set; } = "ChangExport.OutputSetup";
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
     public string Name { get; set; } = "기본값";
     public List<RevitLayerRow> Layers { get; set; } = new();
     public List<MaterialLayerRule> MaterialRules { get; set; } = new();
 
     public void Validate()
     {
-        if (Format != "ChangExport.OutputSetup" || Version is not (1 or 2) || string.IsNullOrWhiteSpace(Name) || Layers == null || Layers.Count == 0)
+        if (Format != "ChangExport.OutputSetup" || Version is not (1 or 2 or 3) || string.IsNullOrWhiteSpace(Name) || Layers == null || Layers.Count == 0)
             throw new InvalidDataException("창Export 출력 설정 파일이 아니거나 항목이 없습니다.");
         if (Layers.Any(r => r == null || string.IsNullOrWhiteSpace(r.Category) || !ViewLayerScope.IsValid(r.ViewScope, allowLegacy: true)
                 || r.CategoryGroup is "Imported" or "Modifier")

@@ -26,6 +26,25 @@ public static class SheetSetService
         if (assigned.Distinct().Count() != assigned.Count) throw new InvalidDataException("저장된 세트에 중복 시트가 있습니다. 출력 설정을 확인하세요.");
         foreach (var sheet in sheets.Where(s => !assigned.Contains(s.UniqueId)))
             sets.Add(new SheetSetDefinition { Name = sheet.Number, SheetUniqueIds = new() { sheet.UniqueId } });
+        foreach (var set in sets)
+        {
+            var assignedTemplates = set.SheetUniqueIds.Select(id => config.SheetTemplateIds.GetValueOrDefault(id, string.Empty))
+                .Distinct(StringComparer.Ordinal).ToList();
+            set.TemplateId = assignedTemplates.Count == 1 ? assignedTemplates[0] : string.Empty;
+        }
         return sets;
+    }
+
+    public static void ApplyAssignments(RevitExportConfiguration config, IEnumerable<SheetSetDefinition> sets,
+        IReadOnlyDictionary<string, string> assignments)
+    {
+        config.SheetSets = sets.Select(s => s.Copy()).ToList();
+        config.SheetTemplateIds = new Dictionary<string, string>(assignments, StringComparer.Ordinal);
+        foreach (var set in config.SheetSets)
+        {
+            var ids = set.SheetUniqueIds.Select(id => config.SheetTemplateIds.GetValueOrDefault(id, string.Empty))
+                .Distinct(StringComparer.Ordinal).ToList();
+            set.TemplateId = ids.Count == 1 ? ids[0] : string.Empty;
+        }
     }
 }

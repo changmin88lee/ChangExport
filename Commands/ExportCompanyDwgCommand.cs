@@ -20,16 +20,14 @@ public sealed class ExportCompanyDwgCommand : IExternalCommand
             var sheets = SheetSetService.ReadSheets(document);
             if (sheets.Count == 0) { TaskDialog.Show("창Export", "출력 가능한 시트가 없습니다."); return Result.Cancelled; }
             var mapping = new RevitLayerMappingService(document);
-            using var settings = new ExportSettingsForm(sheets, SheetSetService.ReadSets(document, configuration, sheets), RevitLayerMappingService.SetupNames(configuration),
-                configuration.SelectedOutputSetup, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "창Export", DateTime.Now.ToString("yyyyMMdd")),
-                sets => { configuration.SheetSets = sets.Select(s => s.Copy()).ToList(); store.Save(configuration); });
+            using var settings = new ExportSettingsForm(sheets, SheetSetService.ReadSets(document, configuration, sheets),
+                RevitLayerMappingService.TemplateChoices(configuration), configuration.SheetTemplateIds,
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "창Export", DateTime.Now.ToString("yyyyMMdd")),
+                (sets, assignments) => { SheetSetService.ApplyAssignments(configuration, sets, assignments); store.Save(configuration); });
             if (settings.ShowDialog() != System.Windows.Forms.DialogResult.OK) return Result.Cancelled;
-            var layers = ViewLayerScope.All.ToDictionary(scope => scope, scope => mapping.Read(settings.SelectedSetup, configuration, scope));
-            var materialRules = ViewLayerScope.All.ToDictionary(scope => scope,
-                scope => RevitLayerMappingService.ReadMaterialRules(settings.SelectedSetup, configuration, scope));
-            configuration.SelectedOutputSetup = settings.SelectedSetup; store.Save(configuration);
+            store.Save(configuration);
             using var progress = new ExportProgressForm((report, cancel, pump) => new RevitDwgExportService().Export(document,
-                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, materialRules, report, cancel, pump, configuration.WideLineKeyword));
+                settings.SelectedSets, settings.OutputFolder, configuration, report, cancel, pump, configuration.WideLineKeyword));
             progress.ShowDialog();
             if (progress.Failure is not null) throw progress.Failure;
             var result = progress.Result ?? throw new InvalidOperationException("출력 결과가 없습니다.");

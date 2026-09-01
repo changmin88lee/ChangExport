@@ -30,6 +30,11 @@ internal static class TemporaryFilterExport
         var materialIndex = new Dictionary<ElementId, MaterialLayerRule>();
         foreach (var rule in materialRules)
         {
+            if (string.IsNullOrWhiteSpace(rule.MaterialUniqueId))
+            {
+                warnings.Add($"재료 필터 미적용: '{rule.MaterialName}' 재료가 현재 프로젝트에 없어 템플릿의 레이어·색상만 보존되어 있습니다.");
+                continue;
+            }
             if (document.GetElement(rule.MaterialUniqueId) is not Material material)
             { warnings.Add($"재료 필터 제외: '{rule.MaterialName}' 재료가 현재 프로젝트에 없습니다."); continue; }
             materialIndex[material.Id] = rule;

@@ -118,7 +118,7 @@ internal static class Program
     private static void Managed(string output)
     {
         var sheets = Enumerable.Range(1, 6).Select(i => new SheetDescriptor("sheet-" + i, i, "A10" + i, "구조 평면도 " + i)).ToList();
-        var singles = sheets.Select(s => new SheetSetDefinition { Name = s.Number, SheetUniqueIds = new() { s.UniqueId } }).ToList();
+        var singles = sheets.Select(s => new SheetSetDefinition { Name = s.Number, TemplateId = "template", SheetUniqueIds = new() { s.UniqueId } }).ToList();
         var editor = new SheetSetEditor(singles);
         editor.Select(editor.Sets[0].Id, false, false); editor.Select(editor.Sets[2].Id, false, true);
         Check(editor.SelectedIds.Count == 3, "Shift range selection"); editor.Combine("구조 평면 세트");
@@ -159,32 +159,30 @@ internal static class Program
             new[] { new MaterialChoice("material-ui-1", 101, "콘크리트") }))
         {
             Render(layers, Path.Combine(output, "layers.png"));
-            layers.Show(); var layerTabs = Descendants(layers).OfType<TabControl>().Single(); layerTabs.SelectedIndex = 1; Application.DoEvents();
+            layers.Show(); Application.DoEvents();
             DataGridView grid = Descendants(layers).OfType<DataGridView>().Single(g => g.Columns.Contains("Color"));
             DataGridView materialGrid = Descendants(layers).OfType<DataGridView>().Single(g => g.Columns.Contains("Material"));
             Check(!grid.AllowUserToResizeColumns && !grid.AllowUserToResizeRows && !grid.AllowUserToOrderColumns, "Grid resize/reorder locked");
             Check(grid.RowCount == 3 && grid.Columns["Color"].ReadOnly, "Initially collapsed categories and click-only color");
-            Check(Descendants(layers).OfType<ComboBox>().Count(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "천장평면도")) == 2,
-                "Category and material tabs both expose architecture/structure/ceiling plan scopes");
+            Check(!Descendants(layers).OfType<TabControl>().Any()
+                && !Descendants(layers).OfType<ComboBox>().Any(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "천장평면도")),
+                "Material and category rules share one template screen without built-in view-type scopes");
             grid.CurrentCell = grid.Rows[0].Cells[0];
             typeof(LayerRuleManagerForm).GetMethod("AddRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             var custom = (RevitLayerRow)grid.CurrentRow!.DataBoundItem;
             Check(custom.IsCustom && grid.RowCount == 18 && custom.Caption.StartsWith("    └"), "Adding a filter opens its category without expanding others");
             grid.EndEdit(); custom.TypeNameContains = "RC"; custom.Layer = "S-RC"; custom.CutLayer = "S-RC-CUT";
-            layerTabs.SelectedIndex = 0; Application.DoEvents();
             typeof(LayerRuleManagerForm).GetMethod("AddMaterialRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             Check(materialGrid.RowCount == 1 && ((MaterialLayerRule)materialGrid.Rows[0].DataBoundItem).MaterialUniqueId == "material-ui-1",
-                "Material tab creates an exact Revit material rule");
+                "Material section creates an exact Revit material rule");
             typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             var savedSetup = store.Load().OutputSetups.First();
             Check(savedSetup.Layers.Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
-            Check(savedSetup.Layers.GroupBy(r => r.ViewScope).ToDictionary(g => g.Key, g => g.Count()) is var scopeCounts
-                && scopeCounts[ViewLayerScope.ArchitecturePlan] == 46 && scopeCounts[ViewLayerScope.StructuralPlan] == 45
-                && scopeCounts[ViewLayerScope.CeilingPlan] == 45,
-                "Saving preserves hidden rows independently for architecture, structure and ceiling plans");
+            Check(savedSetup.Layers.Count == 46 && savedSetup.Layers.All(r => r.ViewScope.Length == 0),
+                "Saving preserves hidden rows in one scope-free DWG layer template");
             Check(savedSetup.MaterialRules.Single().MaterialUniqueId == "material-ui-1"
-                && savedSetup.MaterialRules.Single().ViewScope == ViewLayerScope.ArchitecturePlan,
-                "Exact material rule persists only in the selected plan scope");
+                && savedSetup.MaterialRules.Single().ViewScope.Length == 0,
+                "Exact material rule persists in the selected DWG layer template");
             Render(layers, Path.Combine(output, "layers-filter.png"));
             layers.Size = layers.MinimumSize; Render(layers, Path.Combine(output, "layers-small.png"));
         }
@@ -195,9 +193,11 @@ internal static class Program
             typeof(Button).GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(button, new object[] { EventArgs.Empty });
             Check(colors.SelectedIndex == 5, "Color selection updates ACI value"); Render(colors, Path.Combine(output, "colors.png"));
         }
-        using (var sets = new SheetGroupManagerForm(sheets, grouped))
-        { Render(sets, Path.Combine(output, "sets.png")); sets.Size = sets.MinimumSize; Render(sets, Path.Combine(output, "sets-small.png")); }
-        using (var export = new ExportSettingsForm(sheets, grouped, new[] { "", "프로젝트 출력 설정" }, "", output, _ => { }))
+        var templateChoices = new[] { new LayerTemplateChoice("template", "구조도 DWG") };
+        var assignments = sheets.ToDictionary(s => s.UniqueId, _ => "template");
+        using (var sets = new SheetGroupManagerForm(sheets, grouped, templateChoices, assignments))
+        { Render(sets, Path.Combine(output, "sets.png")); Check(Descendants(sets).OfType<ComboBox>().Any(c => c.Text == "구조도 DWG"), "Sheet cards expose their assigned DWG layer template"); sets.Size = sets.MinimumSize; Render(sets, Path.Combine(output, "sets-small.png")); }
+        using (var export = new ExportSettingsForm(sheets, grouped, templateChoices, assignments, output, (_, _) => { }))
         {
             Render(export, Path.Combine(output, "export.png")); Check(export.SelectedSets.Count == grouped.Count, "Export selects whole sets");
             Check(!Descendants(export).OfType<TextBox>().Any(t => t.AccessibleName == "전역폭 판별 문자열")

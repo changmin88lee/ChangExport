@@ -2,7 +2,7 @@ namespace ChangExport.Models;
 
 public sealed class RevitExportConfiguration
 {
-    public int SchemaVersion { get; set; } = 3;
+    public int SchemaVersion { get; set; } = 4;
     public string SelectedSetup { get; set; } = string.Empty;
     public List<ExportSetupEdits> Setups { get; set; } = new();
     // Old Revit setup edits remain in Setups for preservation; they are not auto-imported.
@@ -10,10 +10,12 @@ public sealed class RevitExportConfiguration
     public string WideLineKeyword { get; set; } = "##";
     public List<ExportSetupEdits> OutputSetups { get; set; } = new() { new() };
     public List<SheetSetDefinition> SheetSets { get; set; } = new();
+    public Dictionary<string, string> SheetTemplateIds { get; set; } = new();
 }
 
 public sealed class ExportSetupEdits
 {
+    public string SetupId { get; set; } = Guid.NewGuid().ToString("N");
     public string SetupName { get; set; } = string.Empty;
     public List<RevitLayerRow> Layers { get; set; } = new();
     public List<MaterialLayerRule> MaterialRules { get; set; } = new();
@@ -51,6 +53,11 @@ public static class ViewLayerScope
 public sealed record MaterialChoice(string UniqueId, long ElementId, string Name)
 {
     public override string ToString() => Name;
+}
+
+public sealed record LayerTemplateChoice(string Id, string Name)
+{
+    public override string ToString() => Name.Length == 0 ? "기본값" : Name;
 }
 
 public sealed class RevitLayerRow
@@ -95,12 +102,13 @@ public sealed class SheetSetDefinition
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = string.Empty;
+    public string TemplateId { get; set; } = string.Empty;
     public List<string> SheetUniqueIds { get; set; } = new();
     public string Direction { get; set; } = "Horizontal";
     public double MarginMm { get; set; } = 0;
     public SheetSetDefinition Copy() => new()
     {
-        Id = Id, Name = Name, SheetUniqueIds = SheetUniqueIds.ToList(), Direction = Direction, MarginMm = MarginMm
+        Id = Id, Name = Name, TemplateId = TemplateId, SheetUniqueIds = SheetUniqueIds.ToList(), Direction = Direction, MarginMm = MarginMm
     };
 }
 

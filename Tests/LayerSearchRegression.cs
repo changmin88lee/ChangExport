@@ -26,7 +26,7 @@ internal static class LayerSearchRegression
         var wall = grid.Rows.Cast<DataGridViewRow>().Select(r => (RevitLayerRow)r.DataBoundItem).Single(r => r.Category == "벽" && r.Subcategory == "하지재");
         wall.Layer = "벽_하지재_수정";
         search.Text = "하지재";
-        check(grid.RowCount == 5 && Field<Label>("_status").Text.Contains("검색 일치 5개"), "Search counts matching rows and shows only relevant parents before expansion");
+        check(grid.RowCount == 5, "Search shows only relevant category parents before expansion");
         foreach (string category in new[] { "바닥", "벽", "지붕", "지형 솔리드", "천장" }) Toggle(category);
         check(grid.RowCount == 10 && grid.Rows.Cast<DataGridViewRow>().Select(r => (RevitLayerRow)r.DataBoundItem).All(r => r.Subcategory is "" or "하지재"),
             "Search expands matching children without unrelated siblings");
@@ -38,10 +38,8 @@ internal static class LayerSearchRegression
         check(grid.RowCount == 2, "Layer name search finds an unsaved edit even after collapse");
         typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, null);
         var saved = store.Load().OutputSetups.Single().Layers;
-        check(saved.Count == 60 && saved.Single(r => r.ViewScope == ViewLayerScope.ArchitecturePlan
-                && r.Category == "벽" && r.Subcategory == "하지재").Layer == wall.Layer
-            && saved.Where(r => r.ViewScope != ViewLayerScope.ArchitecturePlan && r.Category == "벽" && r.Subcategory == "하지재")
-                .All(r => r.Layer != wall.Layer),
-            "Saving while filtered preserves all rows and isolates edits to the selected plan scope");
+        check(saved.Count == 20 && saved.Single(r => r.Category == "벽" && r.Subcategory == "하지재").Layer == wall.Layer
+            && saved.All(r => r.ViewScope.Length == 0),
+            "Saving while filtered preserves all rows in one scope-free DWG layer template");
     }
 }
