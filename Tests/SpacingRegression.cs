@@ -17,7 +17,7 @@ internal static class SpacingRegression
         string path = Path.Combine(output, "legacy-spacing.json"), legacy = JsonSerializer.Serialize(source);
         File.WriteAllText(path, legacy);
         var store = new ExportConfigurationStore(path); var config = store.Load();
-        check(config.SchemaVersion == 2 && config.SheetSets.All(s => s.MarginMm == 0), "Existing horizontal and vertical sets start at zero");
+        check(config.SchemaVersion == 3 && config.SheetSets.All(s => s.MarginMm == 0), "Legacy settings migrate through plan-scope schema and existing horizontal/vertical sets start at zero");
         check(File.ReadAllText(path) == legacy && !File.Exists(path + ".bak"), "Loading does not rewrite the user profile");
         check(config.SelectedSetup == "기존 설정" && config.Setups[0].Layers[0].Layer == "S-WALL"
             && config.SheetSets[1].Direction == "Vertical" && config.SheetSets[0].SheetUniqueIds.SequenceEqual(new[] { "a", "b" }),

@@ -11,7 +11,9 @@ namespace ChangExport.Export;
 public sealed class RevitDwgExportService
 {
     public ExportRunResult Export(Document document, IReadOnlyList<SheetSetDefinition> sets, string outputFolder,
-        string setupName, IReadOnlyList<RevitLayerRow> layers, Action<string> progress, Func<bool> cancel, Action pump, string wideLineKeyword = "##")
+        string setupName, IReadOnlyDictionary<string, List<RevitLayerRow>> layerSets,
+        IReadOnlyDictionary<string, List<MaterialLayerRule>> materialRuleSets,
+        Action<string> progress, Func<bool> cancel, Action pump, string wideLineKeyword = "##")
     {
         var processor = new ManagedDwgProcessor();
 
@@ -20,13 +22,36 @@ public sealed class RevitDwgExportService
         string staging = Path.Combine(outputFolder, "_ChangExport_Work", jobId);
         Directory.CreateDirectory(staging);
         var result = new ExportRunResult { OutputFolder = outputFolder, WorkFolder = staging };
-        using DWGExportOptions options = new RevitLayerMappingService(document).Apply(setupName, layers);
-        options.MergedViews = false; // Keep native view references for explicit in-process binding.
-        options.FileVersion = ACADVersion.R2010; // Export-only override; never modify the project's saved setup.
-        options.TargetUnit = ExportUnit.Millimeter;
-        var wideLines = ExportGeometryOptions.ConfigureWideLines(document, options, layers, wideLineKeyword);
+        var mappingService = new RevitLayerMappingService(document);
+        var optionsByScope = new Dictionary<string, DWGExportOptions>();
+        var wideLinesByScope = new Dictionary<string, List<WideLineLayer>>();
+        var allLayers = layerSets.Values.SelectMany(rows => rows).ToList();
+        var allMaterialRules = materialRuleSets.Values.SelectMany(rules => rules).ToList();
+        var setupIssues = RevitLayerMappingService.Validate(allLayers).ToList();
+        setupIssues.AddRange(RevitLayerMappingService.ValidateMaterialRules(allMaterialRules));
+        setupIssues.AddRange(RevitLayerMappingService.ValidateCombined(allLayers, allMaterialRules));
+        if (setupIssues.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, setupIssues.Distinct().Take(12)));
+        try
+        {
+            foreach (string scope in ViewLayerScope.All)
+            {
+                var scopedLayers = layerSets[scope];
+                var scopedOptions = mappingService.Apply(setupName, scopedLayers);
+                scopedOptions.MergedViews = false; // Keep native view references for explicit in-process binding.
+                scopedOptions.FileVersion = ACADVersion.R2010; // Export-only override; never modify the project's saved setup.
+                scopedOptions.TargetUnit = ExportUnit.Millimeter;
+                optionsByScope[scope] = scopedOptions;
+                wideLinesByScope[scope] = ExportGeometryOptions.ConfigureWideLines(document, scopedOptions, scopedLayers, wideLineKeyword);
+            }
+        }
+        catch
+        {
+            foreach (var option in optionsByScope.Values) option.Dispose();
+            throw;
+        }
+        var allWideLines = wideLinesByScope.Values.SelectMany(rows => rows).ToList();
         var blockSources = ExportGeometryOptions.ReadBlockSources(document);
-        var excludedLayers = RevitLayerMappingService.InternalExcludedLayers(layers);
+        var excludedLayers = RevitLayerMappingService.InternalExcludedLayers(allLayers);
         try
         {
             for (int setIndex = 0; setIndex < sets.Count; setIndex++)
@@ -47,13 +72,19 @@ public sealed class RevitDwgExportService
                         CheckCancel(cancel);
                         ViewSheet sheet = document.GetElement(set.SheetUniqueIds[sheetIndex]) as ViewSheet
                             ?? throw new InvalidOperationException("프로젝트에 없는 시트입니다.");
+                        string viewScope = SheetViewScope.Determine(document, sheet, item.Warnings);
+                        var layers = layerSets[viewScope];
+                        var materialRules = materialRuleSets[viewScope];
+                        var options = optionsByScope[viewScope];
+                        var wideLines = wideLinesByScope[viewScope];
                         string nativeDirectory = Path.Combine(setFolder, $"native_{sheetIndex + 1:000}"); Directory.CreateDirectory(nativeDirectory);
                         stage = $"{sheet.SheetNumber}: Revit 기본 DWG 생성";
                         var placedViews = sheet.GetAllPlacedViews().Select(id => document.GetElement(id)).OfType<Autodesk.Revit.DB.View>()
                             .Select(v => new { id = v.Id.Value, name = v.Name, type = v.ViewType.ToString(), scale = v.Scale }).ToList();
                         var schedules = new FilteredElementCollector(document, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>()
                             .Select(s => new { id = s.ScheduleId.Value, name = document.GetElement(s.ScheduleId)?.Name }).ToList();
-                        item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, sheetUniqueId = sheet.UniqueId, placedViews, schedules,
+                        item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, sheetUniqueId = sheet.UniqueId,
+                            viewScope, viewScopeLabel = ViewLayerScope.Label(viewScope), placedViews, schedules,
                             outlineFeet = new { minU = sheet.Outline.Min.U, minV = sheet.Outline.Min.V, maxU = sheet.Outline.Max.U, maxV = sheet.Outline.Max.V } });
                         progress($"{setIndex + 1}/{sets.Count} 세트 · {set.Name}\n{sheetIndex + 1}/{set.SheetUniqueIds.Count} 시트 · {sheet.SheetNumber} · Revit DWG 생성");
                         var nativeClock = Stopwatch.StartNew();
@@ -65,14 +96,14 @@ public sealed class RevitDwgExportService
                             LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = blockSources,
                             ExcludedLayers = excludedLayers };
                         string input = Path.Combine(nativeDirectory, "sheet.dwg");
-                        if (layers.Any(r => r.IsCustom))
+                        if (layers.Any(r => r.IsCustom) || materialRules.Count > 0)
                         {
                             stage = $"{sheet.SheetNumber}: 임시 복제 시트 필터";
-                            progress($"{set.Name} · {sheet.SheetNumber}\n독립 복제 뷰에서 유형 이름 필터 적용 중");
+                            progress($"{set.Name} · {sheet.SheetNumber}\n독립 복제 뷰에서 복합재료·유형 이름 필터 적용 중");
                             try
                             {
                                 var filterClock = Stopwatch.StartNew();
-                                var filtered = TemporaryFilterExport.Export(document, sheet, options, layers, nativeDirectory,
+                                var filtered = TemporaryFilterExport.Export(document, sheet, options, layers, materialRules, nativeDirectory,
                                     Path.Combine(setFolder, $"filtered_{sheetIndex + 1:000}"), item.Warnings, cancel);
                                 input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList(); request.TextReplacements = new(filtered.TextReplacements);
                                 item.TimingsMs[$"{sheet.SheetNumber}:filter"] = filterClock.Elapsed.TotalMilliseconds;
@@ -101,7 +132,8 @@ public sealed class RevitDwgExportService
                         var conversion = entry.Drawing.Response;
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
                             conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors,
-                            conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.ExcludedEntities,
+                            conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.MaterialBoundaryDuplicatesRemoved,
+                            conversion.FilterLowerGraphicsSkipped, conversion.ExcludedEntities,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
                             conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
                             conversion.FamilySignaturesComputed, conversion.FamilySignaturesSkipped, conversion.FamilySignatureCacheHits,
@@ -115,7 +147,7 @@ public sealed class RevitDwgExportService
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
                     var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
                         Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, UseLayerColors = true,
-                        LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines,
+                        LayerStyles = RevitLayerMappingService.GetAppearances(allLayers), WideLineLayers = allWideLines,
                         ExcludedLayers = excludedLayers },
                         prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
                     foreach (var timing in merged.TimingsMs) item.TimingsMs[timing.Key] = timing.Value;
@@ -137,20 +169,24 @@ public sealed class RevitDwgExportService
             File.WriteAllText(result.ManifestPath, JsonSerializer.Serialize(new
             {
                 jobId, executedAt = DateTimeOffset.Now, modelPath = document.PathName, revitVersion = document.Application.VersionNumber,
-                addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = options.FileVersion.ToString(), outputSpace = "ModelSpace", units = "Model millimeters; sheet scaled by largest 2D viewport denominator",
-                outputSetupSource = "ChangExport", categoryRowCount = layers.Count(r => !r.IsCustom), intermediateDwgWritten = false,
+                addinVersion = ProductInfo.Version, exportSetup = setupName, dwgFormat = ACADVersion.R2010.ToString(), outputSpace = "ModelSpace", units = "Model millimeters; sheet scaled by largest 2D viewport denominator",
+                outputSetupSource = "ChangExport", viewLayerScopes = ViewLayerScope.All.Select(scope => new { scope, label = ViewLayerScope.Label(scope),
+                    categoryRows = layerSets[scope].Count(r => !r.IsCustom), typeFilters = layerSets[scope].Count(r => r.IsCustom), materialFilters = materialRuleSets[scope].Count }), intermediateDwgWritten = false,
                 entityColorPolicy = "Revit TrueColor for hatch/solid fills; masking as WIPEOUT; other entities ByLayer after custom filter remapping",
                 invisibleLinePolicy = "Revit <Invisible Lines> removed on private staging layer",
-                layerColors = RevitLayerMappingService.GetAppearances(layers),
-                wideLineKeyword, wideLineLayers = wideLines, wideLineWidthSource = "Native Revit DWG lineweight in paper mm × sheet scale",
+                layerColors = RevitLayerMappingService.GetAppearances(allLayers),
+                wideLineKeyword, wideLineLayers = allWideLines, wideLineWidthSource = "Native Revit DWG lineweight in paper mm × sheet scale",
                 wideLineColorPolicy = "Only successfully converted ## polylines use explicit Revit line-style RGB; black/white are swapped",
                 familyBlockPolicy = "Automatic fixed-geometry loadable families and Revit detail groups; excludes in-place, path/sketch/two-level/adaptive families, structural framing/columns, curtain wall and railing system components",
                 blockSources = blockSources.Select(f => new { f.Identity, f.Label, f.Category, f.SourceKind, f.PlacementType,
                     f.IsTitleBlock, f.IsDetailGroup, f.NativeLabels, f.NativeElementIds, f.ExclusionReason, knownPrefixCount = f.NativePrefixes.Count }),
-                postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false,
-                customFiltersRequested = layers.Count(r => r.IsCustom), customFilterMethod = "Independent temporary sheet/view copies, type-name contains, color marker remap, transaction-group rollback",
-                requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
+                postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = false, originalSetupModified = false,
+                customFiltersRequested = layerSets.Values.Sum(rows => rows.Count(r => r.IsCustom)), materialFiltersRequested = materialRuleSets.Values.Sum(rows => rows.Count),
+                customFilterMethod = "Independent temporary sheet/view copies; compound wall/floor exact material and type-name filters; color marker remap and transaction-group rollback; lower/beyond graphics excluded",
+                materialRules = materialRuleSets.Values.SelectMany(rules => rules),
+                requestedSets = sets, layerEdits = allLayers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
             }, new JsonSerializerOptions { WriteIndented = true }));
+            foreach (var option in optionsByScope.Values) option.Dispose();
         }
         return result;
     }

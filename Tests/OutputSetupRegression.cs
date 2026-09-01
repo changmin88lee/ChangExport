@@ -30,6 +30,27 @@ internal static class OutputSetupRegression
         check(index.Match("바닥", "RC") == null && index.Match("벽", "없는 유형") == null, "Filter cache isolates categories and negative results");
         var resetIndex = new TypeRuleIndex(new[] { rule2, rule1 });
         check(resetIndex.Match("벽", "RC 벽")?.RuleId == "second", "Rule cache is scoped to the current rule ordering");
+        var architectureRows = loaded.Layers.Select(row => { var copy = row.Copy(); copy.ViewScope = ViewLayerScope.ArchitecturePlan; return copy; }).ToList();
+        var structuralRows = loaded.Layers.Select(row => { var copy = row.Copy(); copy.ViewScope = ViewLayerScope.StructuralPlan;
+            if (copy.Category == "벽" && !copy.IsCustom) copy.Layer = "S-WALL-STRUCTURAL-PLAN"; return copy; }).ToList();
+        var material = new MaterialLayerRule { RuleId = "material-concrete", MaterialUniqueId = "material-uid-1", MaterialName = "콘크리트",
+            ViewScope = ViewLayerScope.ArchitecturePlan, Layer = "A-MATL-CONC", Color = 8 };
+        var scopedFile = new OutputSetupFile { Name = "평면도별 설정", Layers = architectureRows.Concat(structuralRows).ToList(), MaterialRules = new() { material } };
+        string scopedPath = Path.Combine(output, "scoped-output.json"); scopedFile.Save(scopedPath); var scopedLoaded = OutputSetupFile.Load(scopedPath);
+        check(scopedLoaded.Layers.Select(r => r.ViewScope).Distinct().ToHashSet().SetEquals(new[] { ViewLayerScope.ArchitecturePlan, ViewLayerScope.StructuralPlan })
+            && scopedLoaded.MaterialRules.Single().MaterialUniqueId == "material-uid-1",
+            "Portable output setup preserves independent plan scopes and exact Revit material identity");
+        var scopedConfig = new RevitExportConfiguration { OutputSetups = new() { new() { SetupName = "평면도별 설정", Layers = scopedLoaded.Layers,
+            MaterialRules = scopedLoaded.MaterialRules } } };
+        check(RevitLayerMappingService.ReadMaterialRules("평면도별 설정", scopedConfig, ViewLayerScope.ArchitecturePlan).Single().MaterialName == "콘크리트"
+            && RevitLayerMappingService.ReadMaterialRules("평면도별 설정", scopedConfig, ViewLayerScope.StructuralPlan).Count == 0,
+            "Material filter is isolated to its selected plan scope");
+        var duplicateMaterial = material.Copy(); duplicateMaterial.RuleId = "other";
+        check(RevitLayerMappingService.ValidateMaterialRules(new[] { material, duplicateMaterial }).Count > 0,
+            "The same exact Revit material cannot be assigned twice in one plan scope");
+        duplicateMaterial.ViewScope = ViewLayerScope.CeilingPlan;
+        check(RevitLayerMappingService.ValidateMaterialRules(new[] { material, duplicateMaterial }).Count == 0,
+            "The same Revit material can have an independent ceiling-plan rule");
         string original = File.ReadAllText(path);
         loaded.Layers[0].Color = 256;
         try { loaded.Save(path); check(false, "Invalid color rejected"); } catch (InvalidDataException) { check(true, "Invalid color rejected"); }

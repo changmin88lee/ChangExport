@@ -155,20 +155,36 @@ internal static class Program
         var uiRows = Enumerable.Range(0, 45).Select(i => new RevitLayerRow { Category = i < 15 ? "구조 기둥" : i < 30 ? "벽" : "주석",
             Subcategory = i % 15 == 0 ? "" : "하위 항목 " + i, Layer = "S-COL-" + i, OriginalLayer = "S-COL-" + i,
             CutLayer = "S-CUT-" + i, OriginalCutLayer = "S-CUT-" + i, Color = i + 1, OriginalColor = i + 1, CutColor = 7, OriginalCutColor = 7 }).ToList();
-        using (var layers = new LayerRuleManagerForm(store, new(), new[] { "", "프로젝트 출력 설정" }, _ => uiRows.Select(r => r.Copy()).ToList()))
+        using (var layers = new LayerRuleManagerForm(store, new(), new[] { "", "프로젝트 출력 설정" }, _ => uiRows.Select(r => r.Copy()).ToList(),
+            new[] { new MaterialChoice("material-ui-1", 101, "콘크리트") }))
         {
             Render(layers, Path.Combine(output, "layers.png"));
-            DataGridView grid = Descendants(layers).OfType<DataGridView>().Single();
+            layers.Show(); var layerTabs = Descendants(layers).OfType<TabControl>().Single(); layerTabs.SelectedIndex = 1; Application.DoEvents();
+            DataGridView grid = Descendants(layers).OfType<DataGridView>().Single(g => g.Columns.Contains("Color"));
+            DataGridView materialGrid = Descendants(layers).OfType<DataGridView>().Single(g => g.Columns.Contains("Material"));
             Check(!grid.AllowUserToResizeColumns && !grid.AllowUserToResizeRows && !grid.AllowUserToOrderColumns, "Grid resize/reorder locked");
             Check(grid.RowCount == 3 && grid.Columns["Color"].ReadOnly, "Initially collapsed categories and click-only color");
+            Check(Descendants(layers).OfType<ComboBox>().Count(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "천장평면도")) == 2,
+                "Category and material tabs both expose architecture/structure/ceiling plan scopes");
             grid.CurrentCell = grid.Rows[0].Cells[0];
             typeof(LayerRuleManagerForm).GetMethod("AddRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             var custom = (RevitLayerRow)grid.CurrentRow!.DataBoundItem;
             Check(custom.IsCustom && grid.RowCount == 18 && custom.Caption.StartsWith("    └"), "Adding a filter opens its category without expanding others");
             grid.EndEdit(); custom.TypeNameContains = "RC"; custom.Layer = "S-RC"; custom.CutLayer = "S-RC-CUT";
+            layerTabs.SelectedIndex = 0; Application.DoEvents();
+            typeof(LayerRuleManagerForm).GetMethod("AddMaterialRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
+            Check(materialGrid.RowCount == 1 && ((MaterialLayerRule)materialGrid.Rows[0].DataBoundItem).MaterialUniqueId == "material-ui-1",
+                "Material tab creates an exact Revit material rule");
             typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
-            Check(store.Load().OutputSetups.SelectMany(s => s.Layers).Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
-            Check(store.Load().OutputSetups.First().Layers.Count == 46, "Saving a collapsed view preserves hidden rows");
+            var savedSetup = store.Load().OutputSetups.First();
+            Check(savedSetup.Layers.Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
+            Check(savedSetup.Layers.GroupBy(r => r.ViewScope).ToDictionary(g => g.Key, g => g.Count()) is var scopeCounts
+                && scopeCounts[ViewLayerScope.ArchitecturePlan] == 46 && scopeCounts[ViewLayerScope.StructuralPlan] == 45
+                && scopeCounts[ViewLayerScope.CeilingPlan] == 45,
+                "Saving preserves hidden rows independently for architecture, structure and ceiling plans");
+            Check(savedSetup.MaterialRules.Single().MaterialUniqueId == "material-ui-1"
+                && savedSetup.MaterialRules.Single().ViewScope == ViewLayerScope.ArchitecturePlan,
+                "Exact material rule persists only in the selected plan scope");
             Render(layers, Path.Combine(output, "layers-filter.png"));
             layers.Size = layers.MinimumSize; Render(layers, Path.Combine(output, "layers-small.png"));
         }

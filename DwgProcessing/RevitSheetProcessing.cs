@@ -188,6 +188,7 @@ public sealed partial class ManagedDwgProcessor
         int blockIndex = 0;
         var mappings = request.ColorRemaps.ToDictionary(m => m.MarkerAci);
         var counts = mappings.Keys.ToDictionary(k => k, _ => 0);
+        var materialBoundaries = new Dictionary<Entity, int>();
         var byRgb = request.ColorRemaps.ToDictionary(m => ColorRgb(new ACadSharp.Color((short)m.MarkerAci)));
         ColorLayerRemap? Marker(ACadSharp.Color color) => !color.IsByBlock && !color.IsByLayer
             && byRgb.TryGetValue(ColorRgb(color), out var map) ? map : null;
@@ -196,19 +197,78 @@ public sealed partial class ManagedDwgProcessor
             foreach (var entry in request.TextReplacements) value = value.Replace(entry.Key, entry.Value, StringComparison.Ordinal);
             return value;
         }
+        static bool IsLowerGraphic(Entity entity)
+        {
+            static bool Match(string value)
+            {
+                string normalized = value.Trim().Trim('<', '>').Replace(" ", "", StringComparison.Ordinal).ToUpperInvariant();
+                return normalized is "BEYOND" or "UNDERLAY" or "하부" or "아래" or "하부표현" or "하부선";
+            }
+            return Match(entity.Layer.Name) || Match(entity.LineType.Name) || Match(entity.Layer.LineType.Name)
+                || entity.Layer.Name.Split('|').Any(Match) || entity.LineType.Name.Split('|').Any(Match)
+                || entity.Layer.LineType.Name.Split('|').Any(Match);
+        }
+        static string? BoundarySignature(Entity entity)
+        {
+            static string Number(double value) => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            static string Point(XYZ point) => $"{Number(point.X)},{Number(point.Y)},{Number(point.Z)}";
+            if (entity is Line line)
+            {
+                string start = Point(line.StartPoint), end = Point(line.EndPoint);
+                return string.CompareOrdinal(start, end) <= 0 ? $"L|{start}|{end}" : $"L|{end}|{start}";
+            }
+            if (entity is Circle circle)
+                return $"C|{Point(circle.Center)}|{Number(circle.Radius)}|{Point(circle.Normal)}";
+            if (entity is Arc arc)
+            {
+                double start = arc.StartAngle % (2 * Math.PI), end = arc.EndAngle % (2 * Math.PI);
+                if (start < 0) start += 2 * Math.PI;
+                if (end < 0) end += 2 * Math.PI;
+                return $"A|{Point(arc.Center)}|{Number(arc.Radius)}|{Number(start)}|{Number(end)}|{Point(arc.Normal)}";
+            }
+            if (entity is LwPolyline polyline)
+            {
+                string forward = string.Join(";", polyline.Vertices.Select(v => $"{Number(v.Location.X)},{Number(v.Location.Y)},{Number(v.Bulge)}"));
+                string reverse = string.Join(";", polyline.Vertices.AsEnumerable().Reverse().Select(v => $"{Number(v.Location.X)},{Number(v.Location.Y)},{Number(-v.Bulge)}"));
+                string points = string.CompareOrdinal(forward, reverse) <= 0 ? forward : reverse;
+                return $"P|{polyline.IsClosed}|{Number(polyline.Elevation)}|{points}";
+            }
+            return null;
+        }
+        void RemoveDuplicateMaterialBoundaries(BlockRecord block)
+        {
+            var groups = block.Entities.Where(materialBoundaries.ContainsKey)
+                .Select(entity => (Entity: entity, Signature: BoundarySignature(entity)))
+                .Where(item => item.Signature != null)
+                .GroupBy(item => item.Signature!, StringComparer.Ordinal);
+            foreach (var group in groups)
+            {
+                var ordered = group.OrderByDescending(item => materialBoundaries[item.Entity]).ToList();
+                foreach (var duplicate in ordered.Skip(1))
+                {
+                    block.Entities.Remove(duplicate.Entity);
+                    response.MaterialBoundaryDuplicatesRemoved++;
+                }
+            }
+        }
         void Visit(Entity e, ColorLayerRemap? inherited, HashSet<BlockRecord> visited)
         {
-            // Fill and masking graphics carry the source view appearance. Never let
-            // a temporary linework marker recolor them or flow into them through a
-            // parent INSERT; their layer is allowed to remain category based.
-            bool preserveAppearance = IsRevitFillDisplay(e) || IsRevitMask(e);
-            var map = preserveAppearance ? null : Marker(e.Color.IsByLayer ? e.Layer.Color : e.Color) ?? inherited;
+            bool isFill = IsRevitFillDisplay(e), isMask = IsRevitMask(e);
+            var candidate = Marker(e.Color.IsByLayer ? e.Layer.Color : e.Color) ?? inherited;
+            bool lower = candidate != null && !isFill && !isMask && IsLowerGraphic(e);
+            if (lower) response.FilterLowerGraphicsSkipped++;
+            // Masking never moves. Material fills move to the exact material layer,
+            // but keep their explicit Revit color and hatch definition.
+            var map = lower || isMask || (isFill && candidate?.RemapFills != true) ? null : candidate;
             if (map != null)
             {
                 if (!rewritten.Layers.TryGetValue(map.Layer, out Layer layer))
                 { layer = (Layer)e.Layer.Clone(); layer.Name = map.Layer; layer.Color = new ACadSharp.Color((short)map.Color); rewritten.Layers.Add(layer); }
                 layer.Color = new ACadSharp.Color((short)map.Color);
-                e.Layer = layer; e.Color = ACadSharp.Color.ByLayer; counts[map.MarkerAci]++;
+                e.Layer = layer;
+                if (!isFill) e.Color = ACadSharp.Color.ByLayer;
+                if (map.BoundaryPriority > 0 && !isFill) materialBoundaries[e] = map.BoundaryPriority;
+                counts[map.MarkerAci]++;
             }
             if (e is MText m) m.Value = Replace(m.Value);
             if (e is TextEntity t) t.Value = Replace(t.Value);
@@ -220,14 +280,19 @@ public sealed partial class ManagedDwgProcessor
                 // share a nested family block; never recolor their shared definition in place.
                 block.Name = "CE_FILTER_" + ++blockIndex + "_" + block.Name.TrimStart('*');
                 foreach (Entity child in block.Entities) Visit(child, map, visited);
+                RemoveDuplicateMaterialBoundaries(block);
             }
         }
-        var ordered = new List<Entity>();
         foreach (Entity source in document.ModelSpace.GetSortedEntities())
         {
-            var clone = (Entity)source.Clone(); CaptureWidths(clone, geometry); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone); ordered.Add(clone);
+            var clone = (Entity)source.Clone(); CaptureWidths(clone, geometry); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone);
         }
-        PreserveMaskDrawOrder(rewritten.ModelSpace, ordered);
+        RemoveDuplicateMaterialBoundaries(rewritten.ModelSpace);
+        PreserveMaskDrawOrder(rewritten.ModelSpace, rewritten.ModelSpace.GetSortedEntities().ToArray());
+        if (response.FilterLowerGraphicsSkipped > 0)
+            response.Warnings.Add($"하부 표현 보호: Beyond/Underlay 선 {response.FilterLowerGraphicsSkipped:N0}개는 유형·재료 필터를 적용하지 않았습니다.");
+        if (response.MaterialBoundaryDuplicatesRemoved > 0)
+            response.Warnings.Add($"복합재료 공유 경계: 기능 우선순위에 따라 중복선 {response.MaterialBoundaryDuplicatesRemoved:N0}개를 정리했습니다.");
         foreach (var map in request.ColorRemaps)
             response.Warnings.Add($"필터 레이어 '{map.Layer}' / ACI {map.Color} · DWG 객체 {counts[map.MarkerAci]:N0}개 반영");
         response.CustomRuleEntityCounts = request.ColorRemaps.GroupBy(m => m.RuleId).ToDictionary(g => g.Key, g => g.Sum(m => counts[m.MarkerAci]));

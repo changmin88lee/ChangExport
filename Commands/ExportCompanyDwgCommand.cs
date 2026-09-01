@@ -2,6 +2,7 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using ChangExport.Export;
+using ChangExport.Models;
 using ChangExport.Standards;
 using ChangExport.UI;
 
@@ -23,10 +24,12 @@ public sealed class ExportCompanyDwgCommand : IExternalCommand
                 configuration.SelectedOutputSetup, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "창Export", DateTime.Now.ToString("yyyyMMdd")),
                 sets => { configuration.SheetSets = sets.Select(s => s.Copy()).ToList(); store.Save(configuration); });
             if (settings.ShowDialog() != System.Windows.Forms.DialogResult.OK) return Result.Cancelled;
-            var layers = mapping.Read(settings.SelectedSetup, configuration);
+            var layers = ViewLayerScope.All.ToDictionary(scope => scope, scope => mapping.Read(settings.SelectedSetup, configuration, scope));
+            var materialRules = ViewLayerScope.All.ToDictionary(scope => scope,
+                scope => RevitLayerMappingService.ReadMaterialRules(settings.SelectedSetup, configuration, scope));
             configuration.SelectedOutputSetup = settings.SelectedSetup; store.Save(configuration);
             using var progress = new ExportProgressForm((report, cancel, pump) => new RevitDwgExportService().Export(document,
-                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, report, cancel, pump, configuration.WideLineKeyword));
+                settings.SelectedSets, settings.OutputFolder, settings.SelectedSetup, layers, materialRules, report, cancel, pump, configuration.WideLineKeyword));
             progress.ShowDialog();
             if (progress.Failure is not null) throw progress.Failure;
             var result = progress.Result ?? throw new InvalidOperationException("출력 결과가 없습니다.");

@@ -38,7 +38,10 @@ internal static class LayerSearchRegression
         check(grid.RowCount == 2, "Layer name search finds an unsaved edit even after collapse");
         typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, null);
         var saved = store.Load().OutputSetups.Single().Layers;
-        check(saved.Count == 20 && saved.Single(r => r.Category == "벽" && r.Subcategory == "하지재").Layer == wall.Layer,
-            "Saving while filtered preserves all rows and edits");
+        check(saved.Count == 60 && saved.Single(r => r.ViewScope == ViewLayerScope.ArchitecturePlan
+                && r.Category == "벽" && r.Subcategory == "하지재").Layer == wall.Layer
+            && saved.Where(r => r.ViewScope != ViewLayerScope.ArchitecturePlan && r.Category == "벽" && r.Subcategory == "하지재")
+                .All(r => r.Layer != wall.Layer),
+            "Saving while filtered preserves all rows and isolates edits to the selected plan scope");
     }
 }

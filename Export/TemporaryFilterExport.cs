@@ -18,7 +18,8 @@ internal static class TemporaryFilterExport
     }
 
     public static Result Export(Document document, ViewSheet source, DWGExportOptions options,
-        IReadOnlyList<RevitLayerRow> rows, string baselineDirectory, string directory, List<string> warnings, Func<bool> cancel)
+        IReadOnlyList<RevitLayerRow> rows, IReadOnlyList<MaterialLayerRule> materialRules,
+        string baselineDirectory, string directory, List<string> warnings, Func<bool> cancel)
     {
         var result = new Result();
         if (options.PropOverrides == PropOverrideMode.ByLayer)
@@ -26,23 +27,72 @@ internal static class TemporaryFilterExport
         var rules = rows.Where(r => r.IsCustom).ToList();
         var ruleIndex = new TypeRuleIndex(rules);
         var typeNames = new Dictionary<ElementId, string>();
+        var materialIndex = new Dictionary<ElementId, MaterialLayerRule>();
+        foreach (var rule in materialRules)
+        {
+            if (document.GetElement(rule.MaterialUniqueId) is not Material material)
+            { warnings.Add($"재료 필터 제외: '{rule.MaterialName}' 재료가 현재 프로젝트에 없습니다."); continue; }
+            materialIndex[material.Id] = rule;
+        }
         var used = ManagedDwgProcessor.UsedColorIndices(Directory.GetFiles(baselineDirectory, "*.dwg"));
         used.UnionWith(rows.SelectMany(r => new[] { r.Color, r.CutColor }).Where(i => i is >= 1 and <= 255));
+        used.UnionWith(materialRules.Select(r => r.Color).Where(i => i is >= 1 and <= 255));
         int Rgb(int index) { var c = new ACadSharp.Color((short)index); return (c.R << 16) | (c.G << 8) | c.B; }
+        Color ToRevit(int index) { var c = new ACadSharp.Color((short)index); return new Color(c.R, c.G, c.B); }
         var usedRgb = used.Select(Rgb).ToHashSet();
         // ACI has duplicate RGB entries; use one representative and exact RGB matching.
         var available = Enumerable.Range(1, 255).GroupBy(Rgb).Where(g => !usedRgb.Contains(g.Key)).Select(g => g.First()).ToQueue();
-        if (available.Count < rules.Count * 2)
-            throw new InvalidOperationException("기존 도면 색상과 충돌하지 않는 필터 식별색이 부족합니다. 원본 출력은 보존했습니다.");
         var markers = new Dictionary<string, (Color Projection, Color Cut)>();
-        foreach (var rule in rules)
+        (Color Projection, Color Cut) Register(string key, string projectionLayer, int projectionColor,
+            string cutLayer, int cutColor, string ruleId, bool fills, int priority)
         {
+            if (markers.TryGetValue(key, out var existing)) return existing;
+            if (available.Count < 2) throw new InvalidOperationException("기존 도면 색상과 충돌하지 않는 필터 식별색이 부족합니다. 원본 출력은 보존했습니다.");
             int projection = available.Dequeue(), cut = available.Dequeue();
-            Color ToRevit(int index) { var c = new ACadSharp.Color((short)index); return new Color(c.R, c.G, c.B); }
-            markers[rule.RuleId] = (ToRevit(projection), ToRevit(cut));
-            result.Remaps.Add(new ColorLayerRemap { MarkerAci = projection, Layer = rule.Layer, Color = rule.Color, RuleId = rule.RuleId });
-            result.Remaps.Add(new ColorLayerRemap { MarkerAci = cut, Layer = rule.CutLayer, Color = rule.CutColor, RuleId = rule.RuleId });
-            result.MatchedElements[rule.RuleId] = 0;
+            var pair = (ToRevit(projection), ToRevit(cut)); markers[key] = pair;
+            result.Remaps.Add(new ColorLayerRemap { MarkerAci = projection, Layer = projectionLayer, Color = projectionColor,
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority });
+            result.Remaps.Add(new ColorLayerRemap { MarkerAci = cut, Layer = cutLayer, Color = cutColor,
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority });
+            result.MatchedElements.TryAdd(ruleId, 0);
+            return pair;
+        }
+        foreach (var rule in rules) Register("type:" + rule.RuleId, rule.Layer, rule.Color, rule.CutLayer, rule.CutColor, rule.RuleId, false, 0);
+        foreach (var rule in materialRules) result.MatchedElements.TryAdd(rule.RuleId, 0);
+        static int FunctionPriority(int value) => (MaterialFunctionAssignment)value switch
+        {
+            MaterialFunctionAssignment.Finish1 => 700,
+            MaterialFunctionAssignment.Finish2 => 600,
+            MaterialFunctionAssignment.Structure or MaterialFunctionAssignment.StructuralDeck => 500,
+            MaterialFunctionAssignment.Substrate => 400,
+            MaterialFunctionAssignment.Insulation => 300,
+            MaterialFunctionAssignment.Membrane => 200,
+            _ => 100
+        };
+        IReadOnlyCollection<ElementId> CompoundMaterials(Element element)
+        {
+            if (document.GetElement(element.GetTypeId()) is not HostObjAttributes type
+                || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure) return Array.Empty<ElementId>();
+            return structure.GetLayers().Select(layer => layer.MaterialId)
+                .Where(id => id != ElementId.InvalidElementId).Distinct().ToList();
+        }
+        RevitLayerRow? TypeRule(Element element)
+        {
+            if (element.Category == null || !ruleIndex.HasCategory(element.Category.Name)) return null;
+            ElementId typeId = element.GetTypeId();
+            if (!typeNames.TryGetValue(typeId, out string? typeName)) typeNames[typeId] = typeName = document.GetElement(typeId)?.Name ?? "";
+            return ruleIndex.Match(element.Category.Name, typeName);
+        }
+        bool IsLayeredWallOrFloor(Element element)
+        {
+            if (element.Category?.Id.Value is not ((long)BuiltInCategory.OST_Walls or (long)BuiltInCategory.OST_Floors)) return false;
+            return document.GetElement(element.GetTypeId()) is HostObjAttributes type
+                && type.GetCompoundStructure() is { LayerCount: >= 2 };
+        }
+        static ElementId PartSource(Part part)
+        {
+            var sourceId = part.GetSourceElementIds().FirstOrDefault();
+            return sourceId?.HostElementId ?? ElementId.InvalidElementId;
         }
         using var group = new TransactionGroup(document, "창Export 임시 필터 출력 (복구)");
         if (group.Start() != TransactionStatus.Started) throw new InvalidOperationException("임시 출력 트랜잭션을 시작할 수 없습니다.");
@@ -76,6 +126,7 @@ internal static class TemporaryFilterExport
                     if (title is { IsReadOnly: false }) title.Set(string.IsNullOrEmpty(name) ? originalView.Name : name);
                 }
                 views.Add(sheet);
+                var usableViews = new List<View>();
                 foreach (View view in views)
                 {
                     if (cancel()) throw new OperationCanceledException();
@@ -88,29 +139,83 @@ internal static class TemporaryFilterExport
                     // Detach only a temporary copy; the source template and view remain untouched.
                     if (view.ViewTemplateId != ElementId.InvalidElementId) view.ViewTemplateId = ElementId.InvalidElementId;
                     document.Regenerate();
-                    foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
+                    usableViews.Add(view);
+                }
+                var partSources = new HashSet<ElementId>();
+                var viewsWithMaterialParts = new HashSet<ElementId>();
+                if (materialIndex.Count > 0)
+                foreach (View view in usableViews)
+                foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
+                {
+                    if (element is ImportInstance or Part || !IsLayeredWallOrFloor(element)) continue;
+                    var ids = CompoundMaterials(element);
+                    if (!ids.Any(materialIndex.ContainsKey)) continue;
+                    if (PartUtils.HasAssociatedParts(document, element.Id))
                     {
-                        if (element is ImportInstance || element.Category == null || !ruleIndex.HasCategory(element.Category.Name)) continue;
-                        ElementId typeId = element.GetTypeId();
-                        if (!typeNames.TryGetValue(typeId, out string? typeName)) typeNames[typeId] = typeName = document.GetElement(typeId)?.Name ?? "";
-                        var rule = ruleIndex.Match(element.Category.Name, typeName);
-                        if (rule == null) continue;
-                        var marker = markers[rule.RuleId];
-                        using var settings = view.GetElementOverrides(element.Id);
-                        // Marker colors are only a private channel for assigning linework
-                        // to a custom layer. Pattern colors must remain exactly as the
-                        // source view displays them; hatch entities are intentionally not
-                        // inherited into the marker remap in the managed DWG stage.
-                        settings.SetProjectionLineColor(marker.Projection).SetCutLineColor(marker.Cut);
-                        view.SetElementOverrides(element.Id, settings); result.MatchedElements[rule.RuleId]++;
+                        viewsWithMaterialParts.Add(view.Id);
+                        continue;
                     }
+                    try
+                    {
+                        if (PartUtils.AreElementsValidForCreateParts(document, new[] { element.Id }))
+                        {
+                            partSources.Add(element.Id);
+                            viewsWithMaterialParts.Add(view.Id);
+                        }
+                    }
+                    catch (Autodesk.Revit.Exceptions.ArgumentException) { }
+                }
+                if (partSources.Count > 0)
+                {
+                    PartUtils.CreateParts(document, partSources);
+                    document.Regenerate();
+                    foreach (ElementId sourceId in partSources)
+                        temporaryIds.AddRange(PartUtils.GetAssociatedParts(document, sourceId, false, true));
+                }
+                foreach (View view in usableViews.Where(v => v is not ViewSheet && viewsWithMaterialParts.Contains(v.Id)))
+                    view.PartsVisibility = PartsVisibility.ShowPartsOnly;
+                document.Regenerate();
+                foreach (View view in usableViews)
+                foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
+                {
+                    if (element is ImportInstance || element.Category == null) continue;
+                    MaterialLayerRule? materialRule = null; int priority = 100; Element sourceElement = element;
+                    if (element is Part part)
+                    {
+                        ElementId sourceId = PartSource(part);
+                        if (sourceId != ElementId.InvalidElementId && document.GetElement(sourceId) is { } original) sourceElement = original;
+                        if (IsLayeredWallOrFloor(sourceElement))
+                        {
+                            ElementId materialId = part.get_Parameter(BuiltInParameter.DPART_MATERIAL_ID_PARAM)?.AsElementId() ?? ElementId.InvalidElementId;
+                            materialIndex.TryGetValue(materialId, out materialRule);
+                            priority = FunctionPriority(part.get_Parameter(BuiltInParameter.DPART_LAYER_FUNCTION)?.AsInteger() ?? 0);
+                        }
+                    }
+                    (Color Projection, Color Cut) marker;
+                    string matchedRule;
+                    if (materialRule != null)
+                    {
+                        marker = Register($"material:{materialRule.RuleId}:{priority}", materialRule.Layer, materialRule.Color,
+                            materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
+                        matchedRule = materialRule.RuleId;
+                    }
+                    else if (TypeRule(sourceElement) is { } typeRule)
+                    {
+                        marker = markers["type:" + typeRule.RuleId]; matchedRule = typeRule.RuleId;
+                    }
+                    else continue;
+                    using var settings = view.GetElementOverrides(element.Id);
+                    // Only line colors carry private filter markers. Fill appearance stays
+                    // exactly as displayed by Revit and the managed stage changes its layer only.
+                    settings.SetProjectionLineColor(marker.Projection).SetCutLineColor(marker.Cut);
+                    view.SetElementOverrides(element.Id, settings); result.MatchedElements[matchedRule]++;
                 }
                 if (transaction.Commit() != TransactionStatus.Committed) throw new InvalidOperationException("임시 필터 적용에 실패했습니다.");
             }
             if (result.MatchedElements.Values.Sum() == 0)
             {
                 result.Drawing = Path.Combine(baselineDirectory, "sheet.dwg"); result.Remaps.Clear(); result.TextReplacements.Clear();
-                warnings.Add("필터: 일치하는 현재 프로젝트 유형이 없어 기본 카테고리 DWG를 유지했습니다. 링크 내부 객체는 호스트 유형 필터 대상이 아닙니다.");
+                warnings.Add("필터: 일치하는 현재 프로젝트 재료·유형이 없어 기본 카테고리 DWG를 유지했습니다. 링크 내부 객체는 호스트 필터 대상이 아닙니다.");
                 return result;
             }
             if (cancel()) throw new OperationCanceledException();
@@ -123,6 +228,8 @@ internal static class TemporaryFilterExport
             if (!File.Exists(result.Drawing)) throw new IOException("필터 시트 DWG가 없습니다.");
             foreach (var rule in rules)
                 warnings.Add($"필터 판정: {rule.Category} / 유형 이름 포함 '{rule.TypeNameContains}' · Revit 객체 {result.MatchedElements[rule.RuleId]:N0}개 (최종 DWG 반영 개수는 별도 기록)");
+            foreach (var rule in materialRules)
+                warnings.Add($"재료 필터 판정: '{rule.MaterialName}' → {rule.Layer} · Revit 객체/Part {result.MatchedElements.GetValueOrDefault(rule.RuleId):N0}개 (하부 표현 점선 제외, 최종 DWG 반영 개수는 별도 기록)");
         }
         finally
         {

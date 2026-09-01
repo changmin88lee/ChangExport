@@ -65,6 +65,11 @@ namespace ChangExport.DwgProcessing
         public string Layer { get; set; } = "";
         public int Color { get; set; }
         public string RuleId { get; set; } = "";
+        // Material filters move fill entities to the selected material layer while
+        // retaining their explicit Revit display color and hatch definition.
+        public bool RemapFills { get; set; }
+        // Shared compound-layer boundaries keep the highest Revit material function.
+        public int BoundaryPriority { get; set; }
     }
 
     public sealed class LayerAppearance
@@ -95,6 +100,8 @@ namespace ChangExport.DwgProcessing
         public int NormalizedEntityColors { get; set; }
         public int PreservedFillColors { get; set; }
         public int PreservedMaskingEntities { get; set; }
+        public int MaterialBoundaryDuplicatesRemoved { get; set; }
+        public int FilterLowerGraphicsSkipped { get; set; }
         public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }
         public int WideLineSkipped { get; set; }

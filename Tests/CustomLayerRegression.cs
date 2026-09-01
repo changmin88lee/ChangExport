@@ -64,5 +64,54 @@ internal static class CustomLayerRegression
         var nested = pairSaved.BlockRecords.Where(block => block.Name.EndsWith("SHARED_NESTED")).ToList();
         check(nested.Count == 2 && nested.Select(block => block.Entities.Single().Layer.Name).ToHashSet().SetEquals(new[] { "S-RC", "S-RC-CUT" }),
             "Shared nested block definitions remain independent under different parent filters");
+
+        // Exact compound-material remaps move fills without changing their Revit
+        // appearance, protect lower graphics, and deduplicate shared boundaries.
+        var materials = DwgRegression.Sheet(ACadVersion.AC1024);
+        var native = new Layer("NATIVE-MATERIAL") { Color = new ACadSharp.Color(7) }; materials.Layers.Add(native);
+        var beyond = new LineType("Beyond"); materials.LineTypes.Add(beyond);
+        var finishBoundary = new Line { StartPoint = new XYZ(100, 0, 0), EndPoint = new XYZ(100, 50, 0),
+            Layer = native, Color = new ACadSharp.Color(202) };
+        var structureBoundary = new Line { StartPoint = finishBoundary.StartPoint, EndPoint = finishBoundary.EndPoint,
+            Layer = native, Color = new ACadSharp.Color(203) };
+        materials.Entities.Add(finishBoundary); materials.Entities.Add(structureBoundary);
+        materials.Entities.Add(new Line { StartPoint = new XYZ(120, 0, 0), EndPoint = new XYZ(120, 50, 0),
+            Layer = native, LineType = beyond, Color = new ACadSharp.Color(202) });
+        var materialBlock = new BlockRecord("MATERIAL_PART");
+        materialBlock.Entities.Add(new Line { EndPoint = new XYZ(20, 0, 0) });
+        var testPattern = new HatchPattern("CE_TEST_PATTERN");
+        testPattern.Lines.Add(new HatchPattern.Line { Angle = 0, BasePoint = XY.Zero, Offset = new XY(0, 2), DashLengths = new() { 4, -1 } });
+        var materialFill = new Hatch { IsSolid = false, Pattern = testPattern, PatternType = HatchPatternType.Custom,
+            PatternScale = 3.25, PatternAngle = .42,
+            Color = new ACadSharp.Color(12, 180, 44) };
+        materialFill.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+        {
+            new Hatch.BoundaryPath.Polyline(new[] { new XYZ(1, 1, 0), new XYZ(5, 1, 0), new XYZ(5, 5, 0), new XYZ(1, 5, 0) })
+        }));
+        materialBlock.Entities.Add(materialFill);
+        materials.Entities.Add(new Insert(materialBlock) { Color = new ACadSharp.Color(202) });
+        string materialInput = Path.Combine(output, "material-filter-source.dwg");
+        string materialOutput = Path.Combine(output, "material-filter-final.dwg");
+        DwgWriter.Write(materialInput, materials);
+        var materialResponse = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", OutputPath = materialOutput,
+            ColorRemaps = new()
+            {
+                new() { MarkerAci = 202, Layer = "A-FINISH", Color = 30, RuleId = "finish", RemapFills = true, BoundaryPriority = 700 },
+                new() { MarkerAci = 203, Layer = "A-STRUCTURE", Color = 8, RuleId = "structure", RemapFills = true, BoundaryPriority = 500 }
+            } }, materialInput, output);
+        var materialSaved = DwgReader.Read(materialOutput);
+        var materialEntities = materialSaved.BlockRecords.SelectMany(record => record.Entities).ToArray();
+        var savedFill = materialEntities.OfType<Hatch>().Single(h => h.Layer.Name == "A-FINISH");
+        check(!savedFill.Color.IsByLayer && savedFill.Color.R == 12 && savedFill.Color.G == 180 && savedFill.Color.B == 44
+            && savedFill.Pattern?.Name == "CE_TEST_PATTERN"
+            && Math.Abs(savedFill.PatternScale - 3.25) < 1e-8 && Math.Abs(savedFill.PatternAngle - .42) < 1e-8,
+            "Material filter moves hatch layer while retaining Revit color, pattern scale and angle");
+        check(materialEntities.OfType<Line>().Count(line => line.StartPoint.X == 100 && line.Layer.Name == "A-FINISH") == 1
+            && !materialEntities.OfType<Line>().Any(line => line.StartPoint.X == 100 && line.Layer.Name == "A-STRUCTURE")
+            && materialResponse.MaterialBoundaryDuplicatesRemoved == 1,
+            "Shared compound boundary keeps Finish1 ahead of Structure");
+        check(materialEntities.OfType<Line>().Any(line => line.StartPoint.X == 120 && line.Layer.Name == "NATIVE-MATERIAL")
+            && materialResponse.FilterLowerGraphicsSkipped == 1,
+            "Beyond lower graphic is excluded from type/material remapping");
     }
 }
