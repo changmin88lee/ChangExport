@@ -29,11 +29,10 @@ internal static class ExportGeometryOptions
         return result;
     }
 
-    internal static List<FamilyBlockSource> ReadFamilies(Document document, IEnumerable<string>? additionalFamilyIds = null)
+    internal static List<FamilyBlockSource> ReadBlockSources(Document document)
     {
         var sources = new Dictionary<string, FamilyBlockSource>();
         var knownPrefixes = new HashSet<string>(StringComparer.Ordinal);
-        var selected = (additionalFamilyIds ?? Array.Empty<string>()).ToHashSet(StringComparer.Ordinal);
         var visited = new HashSet<Document>();
         void Collect(Document owner)
         {
@@ -44,14 +43,13 @@ internal static class ExportGeometryOptions
                 var category = instance.Category;
                 bool title = category?.Id.Value == (long)BuiltInCategory.OST_TitleBlocks;
                 if (symbol == null || category == null) continue;
-                string familyIdentity = owner.ProjectInformation.UniqueId + ":" + symbol.Family.UniqueId;
                 string exclusion = BlockExclusion(category.Id.Value, category.CategoryType == CategoryType.Model,
-                    instance.ViewSpecific, symbol.Family.IsInPlace, selected.Contains(familyIdentity), out bool additional);
+                    instance.ViewSpecific, symbol.Family.IsInPlace, symbol.Family.FamilyPlacementType);
                 string identity = owner.ProjectInformation.UniqueId + ":" + symbol.UniqueId;
                 if (!sources.TryGetValue(identity, out var item))
                     sources[identity] = item = new FamilyBlockSource { Identity = identity, Label = symbol.Family.Name + " - " + symbol.Name,
                         IsTitleBlock = title, Category = category.Name, ExclusionReason = exclusion,
-                        FamilyIdentity = familyIdentity, FamilyName = symbol.Family.Name, CanSelectAdditional = additional };
+                        SourceKind = "LoadableFamily", PlacementType = symbol.Family.FamilyPlacementType.ToString() };
                 // Collected Revit names permit full-name matching when native IDs represent
                 // geometry variants or linked elements. Excluded types remain in the index
                 // so an identical name cannot accidentally select a different allowed type.
@@ -63,6 +61,24 @@ internal static class ExportGeometryOptions
                     if (knownPrefixes.Add(identity + "|" + prefix)) item.NativePrefixes.Add(prefix);
                 }
             }
+            foreach (Group group in new FilteredElementCollector(owner).OfClass(typeof(Group)))
+            {
+                var category = group.Category;
+                if (category == null || category.Id.Value != (long)BuiltInCategory.OST_IOSDetailGroups
+                    && category.Id.Value != (long)BuiltInCategory.OST_IOSAttachedDetailGroups) continue;
+                GroupType type = group.GroupType;
+                string identity = owner.ProjectInformation.UniqueId + ":detail-group:" + type.UniqueId;
+                if (!sources.TryGetValue(identity, out var item))
+                    sources[identity] = item = new FamilyBlockSource { Identity = identity, Label = type.Name,
+                        Category = category.Name, SourceKind = "DetailGroup", IsDetailGroup = true, PlacementType = "DetailGroup" };
+                string label = NativeName(type.Name);
+                if (!item.NativeLabels.Contains(label)) item.NativeLabels.Add(label);
+                foreach (long id in new[] { type.Id.Value, group.Id.Value })
+                {
+                    string value = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (!item.NativeElementIds.Contains(value)) item.NativeElementIds.Add(value);
+                }
+            }
             foreach (RevitLinkInstance link in new FilteredElementCollector(owner).OfClass(typeof(RevitLinkInstance)))
                 if (link.GetLinkDocument() is { } linked) Collect(linked);
         }
@@ -70,18 +86,34 @@ internal static class ExportGeometryOptions
         return sources.Values.ToList();
     }
 
-    internal static string BlockExclusion(long category, bool model, bool viewSpecific, bool inPlace, bool selected, out bool additional)
+    internal static string BlockExclusion(long category, bool model, bool viewSpecific, bool inPlace, FamilyPlacementType placement)
     {
-        additional = false;
         if (inPlace) return "내부 작성 패밀리";
         bool title = category == (long)BuiltInCategory.OST_TitleBlocks;
         if (!title && (viewSpecific || !model)) return "독립 주석·2D 패밀리";
-        if (category is (long)BuiltInCategory.OST_StructuralFraming or (long)BuiltInCategory.OST_StructuralFoundation
-            or (long)BuiltInCategory.OST_Walls or (long)BuiltInCategory.OST_Floors) return "보·벽·바닥·기초";
-        bool standard = title || category is (long)BuiltInCategory.OST_Doors or (long)BuiltInCategory.OST_Windows
-            or (long)BuiltInCategory.OST_Columns or (long)BuiltInCategory.OST_StructuralColumns;
-        additional = !standard;
-        return standard || selected ? "" : "추가 패밀리 미선택";
+        if (title) return "";
+        if (category is (long)BuiltInCategory.OST_StructuralFraming
+            or (long)BuiltInCategory.OST_Columns or (long)BuiltInCategory.OST_StructuralColumns)
+            return "인스턴스 길이·높이가 달라지는 구조 요소";
+        if (category is (long)BuiltInCategory.OST_CurtainWallPanels or (long)BuiltInCategory.OST_CurtainWallMullions)
+            return "커튼월 시스템 구성요소";
+        if (category is (long)BuiltInCategory.OST_Railings or (long)BuiltInCategory.OST_RailingSystem
+            or (long)BuiltInCategory.OST_RailingSupport or (long)BuiltInCategory.OST_RailingSystemBaluster
+            or (long)BuiltInCategory.OST_RailingSystemHandRail or (long)BuiltInCategory.OST_RailingSystemHandRailBracket
+            or (long)BuiltInCategory.OST_RailingSystemHardware or (long)BuiltInCategory.OST_RailingSystemPanel
+            or (long)BuiltInCategory.OST_RailingSystemPost or (long)BuiltInCategory.OST_RailingSystemRail
+            or (long)BuiltInCategory.OST_RailingSystemSegment or (long)BuiltInCategory.OST_RailingSystemTermination
+            or (long)BuiltInCategory.OST_RailingSystemTopRail or (long)BuiltInCategory.OST_RailingSystemTransition
+            or (long)BuiltInCategory.OST_RailingBalusterRail or (long)BuiltInCategory.OST_RailingHandRail
+            or (long)BuiltInCategory.OST_RailingTopRail or (long)BuiltInCategory.OST_RailingTermination
+            or (long)BuiltInCategory.OST_StairsRailing or (long)BuiltInCategory.OST_StairsRailingBaluster or (long)BuiltInCategory.OST_StairsRailingRail
+            or (long)BuiltInCategory.OST_StairsSupports)
+            return "난간·계단 시스템 구성요소";
+        if (placement is FamilyPlacementType.TwoLevelsBased or FamilyPlacementType.CurveBased
+            or FamilyPlacementType.CurveBasedDetail or FamilyPlacementType.CurveDrivenStructural
+            or FamilyPlacementType.Adaptive or FamilyPlacementType.Invalid)
+            return "스케치·경로·레벨·인스턴스 형상 가변 패밀리";
+        return "";
     }
 
     private static string NativeName(string name)

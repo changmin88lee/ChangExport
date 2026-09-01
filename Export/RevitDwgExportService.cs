@@ -11,8 +11,7 @@ namespace ChangExport.Export;
 public sealed class RevitDwgExportService
 {
     public ExportRunResult Export(Document document, IReadOnlyList<SheetSetDefinition> sets, string outputFolder,
-        string setupName, IReadOnlyList<RevitLayerRow> layers, Action<string> progress, Func<bool> cancel, Action pump, string wideLineKeyword = "##",
-        IEnumerable<string>? additionalBlockFamilyIds = null)
+        string setupName, IReadOnlyList<RevitLayerRow> layers, Action<string> progress, Func<bool> cancel, Action pump, string wideLineKeyword = "##")
     {
         var processor = new ManagedDwgProcessor();
 
@@ -26,7 +25,7 @@ public sealed class RevitDwgExportService
         options.FileVersion = ACADVersion.R2010; // Export-only override; never modify the project's saved setup.
         options.TargetUnit = ExportUnit.Millimeter;
         var wideLines = ExportGeometryOptions.ConfigureWideLines(options, layers, wideLineKeyword);
-        var families = ExportGeometryOptions.ReadFamilies(document, additionalBlockFamilyIds);
+        var blockSources = ExportGeometryOptions.ReadBlockSources(document);
         try
         {
             for (int setIndex = 0; setIndex < sets.Count; setIndex++)
@@ -62,7 +61,7 @@ public sealed class RevitDwgExportService
                         if (!success || !File.Exists(Path.Combine(nativeDirectory, "sheet.dwg"))) throw new IOException("Revit이 시트 DWG를 생성하지 못했습니다.");
                         CheckCancel(cancel);
                         var request = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = true,
-                            LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = families };
+                            LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = blockSources };
                         string input = Path.Combine(nativeDirectory, "sheet.dwg");
                         if (layers.Any(r => r.IsCustom))
                         {
@@ -100,7 +99,8 @@ public sealed class RevitDwgExportService
                         var conversion = entry.Drawing.Response;
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
                             conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors,
-                            conversion.WideLineConverted, conversion.WideLineSkipped, conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions, conversion.FamilyBlockFallbacks, conversion.FamilyBlockMatches });
+                            conversion.WideLineConverted, conversion.WideLineSkipped, conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
+                            conversion.FamilyBlockFallbacks, conversion.FamilyBlockMatches });
                         item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {entry.Sheet}: {w}"));
                         foreach (var timing in conversion.TimingsMs) item.TimingsMs[$"{entry.Sheet}:{timing.Key}"] = timing.Value;
                     }
@@ -134,8 +134,9 @@ public sealed class RevitDwgExportService
                 outputSetupSource = "ChangExport", categoryRowCount = layers.Count(r => !r.IsCustom), intermediateDwgWritten = false,
                 entityColorPolicy = "ByLayer after custom filter remapping", layerColors = RevitLayerMappingService.GetAppearances(layers),
                 wideLineKeyword, wideLineLayers = wideLines, wideLineWidthSource = "Native Revit DWG lineweight in paper mm × sheet scale",
-                familyBlockPolicy = "Doors, windows, columns, titleblocks and explicitly selected loadable model families; exact geometry/style reuse within a type; no in-place families, beams, walls, floors, foundations or standalone annotations",
-                familySources = families.Select(f => new { f.Identity, f.FamilyIdentity, f.Label, f.Category, f.IsTitleBlock, f.NativeLabels, f.ExclusionReason, knownPrefixCount = f.NativePrefixes.Count }),
+                familyBlockPolicy = "Automatic fixed-geometry loadable families and Revit detail groups; excludes in-place, path/sketch/two-level/adaptive families, structural framing/columns, curtain wall and railing system components",
+                blockSources = blockSources.Select(f => new { f.Identity, f.Label, f.Category, f.SourceKind, f.PlacementType,
+                    f.IsTitleBlock, f.IsDetailGroup, f.NativeLabels, f.NativeElementIds, f.ExclusionReason, knownPrefixCount = f.NativePrefixes.Count }),
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = options.MergedViews, originalSetupModified = false,
                 customFiltersRequested = layers.Count(r => r.IsCustom), customFilterMethod = "Independent temporary sheet/view copies, type-name contains, color marker remap, transaction-group rollback",
                 requestedSets = sets, layerEdits = layers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items

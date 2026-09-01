@@ -39,6 +39,7 @@ internal static class SpacingRegression
         var selection = Descendants(dialog).OfType<ComboBox>().Single();
         var input = Descendants(dialog).OfType<NumericUpDown>().Single();
         check(!Descendants(dialog).OfType<DataGridView>().Any(), "Settings use dedicated inputs without a spreadsheet");
+        check(!Descendants(dialog).OfType<Button>().Any(b => b.Text.Contains("패밀리 블록", StringComparison.Ordinal)), "Manual family block selection is removed");
         check(dialog.WideLineKeyword == "##", "Existing keyword loads in the separate settings window");
         Descendants(dialog).OfType<TextBox>().Single(t => t.AccessibleName == "전역폭 판별 문자열").Text = "  전역폭  ";
         check(dialog.WideLineKeyword == "전역폭", "Keyword edits are trimmed in the separate settings window");

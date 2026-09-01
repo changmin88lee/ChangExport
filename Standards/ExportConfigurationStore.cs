@@ -26,8 +26,7 @@ public sealed class ExportConfigurationStore
         if (!File.Exists(FilePath)) return new();
         var config = JsonSerializer.Deserialize<RevitExportConfiguration>(File.ReadAllText(FilePath), Json)
             ?? throw new InvalidDataException("출력 설정 파일을 읽을 수 없습니다. 기존 파일은 유지됩니다.");
-        if (config.SchemaVersion is not (1 or 2) || config.Setups is null || config.SheetSets is null || config.WideLineKeyword == null
-            || config.AdditionalBlockFamilyIds is null || config.AdditionalBlockFamilyIds.Any(string.IsNullOrWhiteSpace))
+        if (config.SchemaVersion is not (1 or 2) || config.Setups is null || config.SheetSets is null || config.WideLineKeyword == null)
             throw new InvalidDataException("지원하지 않는 출력 설정입니다. 기존 파일은 유지됩니다.");
         if (config.OutputSetups == null || config.OutputSetups.Any(s => s == null || s.SetupName == null || s.Layers == null)
             || config.OutputSetups.GroupBy(s => s.SetupName, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))

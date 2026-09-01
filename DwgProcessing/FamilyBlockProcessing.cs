@@ -28,6 +28,13 @@ public sealed partial class ManagedDwgProcessor
             string method = "이름·ID 일치";
             if (matches.Length == 0)
             {
+                matches = suffixes.Where(m => m.Value.Length > 2 && char.IsDigit(m.Value[1]))
+                    .SelectMany(m => context.DetailGroupIds.GetValueOrDefault(m.Value.Trim('-')) ?? new())
+                    .DistinctBy(s => s.Identity).ToArray();
+                method = "상세 그룹 ID 일치";
+            }
+            if (matches.Length == 0)
+            {
                 // Revit can use a geometry/linked-document ID or V1/V2 variant suffix.
                 // Match the entire collected family/type name and reject ambiguities.
                 matches = suffixes.SelectMany(m => context.FamilyNames.GetValueOrDefault(FamilyNameKey(block.Name[..m.Index])) ?? new())
@@ -44,7 +51,8 @@ public sealed partial class ManagedDwgProcessor
             context.FamilyMatches.Add(new(block.Name, source.Label, source.ExclusionReason.Length > 0 ? "제외: " + source.ExclusionReason : method));
             if (source.ExclusionReason.Length > 0) continue;
             string token = "CE_SRCF_" + Hash(source.Identity)[..24] + "_";
-            context.Families[token] = new FamilyBlockInfo { Identity = source.Identity, Label = source.Label, IsTitleBlock = source.IsTitleBlock };
+            context.Families[token] = new FamilyBlockInfo { Identity = source.Identity, Label = source.Label,
+                IsTitleBlock = source.IsTitleBlock, IsDetailGroup = source.IsDetailGroup };
             block.Name = token + Guid.NewGuid().ToString("N");
         }
     }
@@ -70,8 +78,8 @@ public sealed partial class ManagedDwgProcessor
         var members = output.Skip(start).ToArray();
         void Keep(string reason) => response.FamilyBlockFallbacks[reason] = response.FamilyBlockFallbacks.GetValueOrDefault(reason) + 1;
         if (members.Length == 0) return;
-        if (members.Any(e => e is Insert or Dimension or AttributeEntity or AttributeDefinition)
-            || (!info.IsTitleBlock && members.Any(e => e is TextEntity or MText)))
+        if (!info.IsDetailGroup && (members.Any(e => e is Insert or Dimension or AttributeEntity or AttributeDefinition)
+            || (!info.IsTitleBlock && members.Any(e => e is TextEntity or MText))))
         { Keep("주석·잘림 객체가 섞인 패밀리의 표시 순서 보존"); return; }
         if (!IsPlanarFamilyTransform(transform) || !Matrix4.Inverse(transform.Matrix, out var inverse))
         { Keep("반전·비균등·기울어진 패밀리의 형상 보존"); return; }
@@ -92,7 +100,7 @@ public sealed partial class ManagedDwgProcessor
         var insert = PlaceFamily(block, transform);
         output.RemoveRange(start, output.Count - start); output.Add(insert);
         response.FamilyBlocks[token] = new FamilyBlockInfo { Identity = info.Identity, Label = info.Label,
-            IsTitleBlock = info.IsTitleBlock, Processed = true };
+            IsTitleBlock = info.IsTitleBlock, IsDetailGroup = info.IsDetailGroup, Processed = true };
     }
 
     private static bool IsPlanarFamilyTransform(Transform transform)
@@ -118,12 +126,13 @@ public sealed partial class ManagedDwgProcessor
         var surviving = new Dictionary<string, FamilyBlockInfo>();
         var used = new HashSet<string>(StringComparer.Ordinal);
         var ordered = document.ModelSpace.GetSortedEntities().ToArray();
+        var rebuilt = new List<Entity>();
         bool changed = false;
         for (int index = 0; index < ordered.Length; index++)
         {
-            if (ordered[index] is not Insert insert) continue;
+            if (ordered[index] is not Insert insert) { rebuilt.Add(ordered[index]); continue; }
             var pair = known.FirstOrDefault(p => insert.Block.Name.Contains(p.Key, StringComparison.Ordinal));
-            if (pair.Value == null) continue;
+            if (pair.Value == null) { rebuilt.Add(insert); continue; }
             response.FamilyBlockReferences++;
             string? signature = FamilySignature(insert.Block);
             string key = pair.Value.Identity + ":" + (signature == null ? Guid.NewGuid().ToString("N") : Hash(signature));
@@ -131,7 +140,7 @@ public sealed partial class ManagedDwgProcessor
             {
                 var replacement = new Insert(same.Block) { InsertPoint = insert.InsertPoint, Normal = insert.Normal,
                     Rotation = insert.Rotation, XScale = insert.XScale, YScale = insert.YScale, ZScale = insert.ZScale };
-                replacement.MatchProperties(insert); ordered[index] = replacement; insert = replacement; changed = true;
+                replacement.MatchProperties(insert); insert = replacement; changed = true;
             }
             else
             {
@@ -139,11 +148,12 @@ public sealed partial class ManagedDwgProcessor
                 surviving[insert.Block.Name] = pair.Value;
             }
             used.Add(insert.Block.Name);
+            rebuilt.Add(insert);
         }
         if (changed)
         {
             document.ModelSpace.Entities.Clear();
-            foreach (var entity in ordered) document.Entities.Add(entity);
+            foreach (var entity in rebuilt) document.Entities.Add(entity);
         }
         // Remove only unused definitions made by this operation, never source/user blocks.
         foreach (var block in document.BlockRecords.ToArray())
@@ -152,7 +162,7 @@ public sealed partial class ManagedDwgProcessor
         response.FamilyBlocks = surviving;
         response.FamilyBlockDefinitions = used.Count;
         if (response.FamilyBlockReferences > 0)
-            response.Warnings.Add($"패밀리 블록: 배치 {response.FamilyBlockReferences:N0}개 · 공유 정의 {response.FamilyBlockDefinitions:N0}개 · 보·벽·바닥·기초·독립 주석 제외");
+            response.Warnings.Add($"자동 블록: 배치 {response.FamilyBlockReferences:N0}개 · 공유 정의 {response.FamilyBlockDefinitions:N0}개 · 고정 형상 패밀리와 상세 그룹만 처리");
         foreach (var fallback in response.FamilyBlockFallbacks)
             response.Warnings.Add($"패밀리 개별 객체 유지: {fallback.Key} · {fallback.Value:N0}개");
     }
@@ -163,17 +173,36 @@ public sealed partial class ManagedDwgProcessor
     {
         try
         {
-            foreach (var e in block.Entities)
-                if (e is not (Line or Arc or Circle or LwPolyline or Hatch or TextEntity or MText or Ellipse or Spline or Solid)
-                    || e.XDictionary != null || e.ExtendedData.Any() || e.Reactors.Any() || e.Material != null || e.BookColor != null)
-                    return null;
-            return JsonSerializer.Serialize(Snapshot(block.GetSortedEntities(), 0));
+            var path = new HashSet<BlockRecord>();
+            object BlockSnapshot(BlockRecord current, int depth)
+            {
+                if (depth > 32 || !path.Add(current)) throw new NotSupportedException();
+                try { return current.GetSortedEntities().Select(e => EntitySnapshot(e, depth + 1)).ToArray(); }
+                finally { path.Remove(current); }
+            }
+            object EntitySnapshot(Entity entity, int depth)
+            {
+                if (entity is not (Line or Arc or Circle or LwPolyline or Hatch or TextEntity or MText or Ellipse or Spline or Solid
+                    or Insert or Dimension or AttributeEntity or AttributeDefinition)
+                    || entity.XDictionary != null || entity.ExtendedData.Any() || entity.Reactors.Any() || entity.Material != null || entity.BookColor != null)
+                    throw new NotSupportedException();
+                var value = new SortedDictionary<string, object?> { ["entity"] = Snapshot(entity, depth) };
+                if (entity is Insert insert)
+                {
+                    value["block"] = BlockSnapshot(insert.Block, depth + 1);
+                    value["attributes"] = insert.Attributes.Select(a => Snapshot(a, depth + 1)).ToArray();
+                }
+                if (entity is Dimension dimension && dimension.Block != null)
+                    value["display"] = BlockSnapshot(dimension.Block, depth + 1);
+                return value;
+            }
+            return JsonSerializer.Serialize(BlockSnapshot(block, 0));
         }
         catch (Exception ex) when (ex is InvalidOperationException or TargetInvocationException or NotSupportedException) { return null; }
     }
 
     private static readonly HashSet<string> SignatureSkip = new() { "Handle", "Owner", "Document", "Name", "Reactors", "XDictionary", "ExtendedData",
-        "Block", "Style", "Material", "Layer", "LineType", "BoundingBox", "CadObject", "Entities", "ShapeStyle", "PlotStyleName" };
+        "Block", "Attributes", "Style", "Material", "Layer", "LineType", "BoundingBox", "CadObject", "Entities", "ShapeStyle", "PlotStyleName" };
 
     private static object? Snapshot(object? value, int depth)
     {

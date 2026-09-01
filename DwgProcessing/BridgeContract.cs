@@ -38,9 +38,10 @@ namespace ChangExport.DwgProcessing
         public List<string> NativeLabels { get; set; } = new();
         public string ExclusionReason { get; set; } = "";
         public string Category { get; set; } = "";
-        public string FamilyIdentity { get; set; } = "";
-        public string FamilyName { get; set; } = "";
-        public bool CanSelectAdditional { get; set; }
+        public string SourceKind { get; set; } = "LoadableFamily";
+        public string PlacementType { get; set; } = "";
+        public bool IsDetailGroup { get; set; }
+        public List<string> NativeElementIds { get; set; } = new();
     }
 
     public sealed record FamilyBlockMatch(string NativeBlock, string Label, string Status);
@@ -50,6 +51,7 @@ namespace ChangExport.DwgProcessing
         public string Identity { get; set; } = "";
         public string Label { get; set; } = "";
         public bool IsTitleBlock { get; set; }
+        public bool IsDetailGroup { get; set; }
         public bool Processed { get; set; }
     }
 
