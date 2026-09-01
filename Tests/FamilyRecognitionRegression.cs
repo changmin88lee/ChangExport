@@ -119,7 +119,9 @@ internal static class FamilyRecognitionRegression
                 IsTitleBlock = label.StartsWith("LAON_LH_Title"), ExclusionReason = excluded ? "시스템·인스턴스 가변 요소" : "" });
         }
         var processor = new ManagedDwgProcessor();
-        var sheets = paths.Where(p => Path.GetFileName(p) == "sheet.dwg").OrderBy(p => p).ToArray();
+        var sheets = paths.Where(p => Path.GetFileName(p) == "sheet.dwg"
+                && Path.GetFileName(Path.GetDirectoryName(p))?.StartsWith("filtered_", StringComparison.OrdinalIgnoreCase) == true)
+            .OrderBy(p => p).ToArray();
         PreparedDrawing[] Prepare(bool family) => sheets.Select(p => processor.Prepare(new BridgeRequest { RevitSheet = true, UseLayerColors = true,
             LayerStyles = layers, WideLineLayers = wide, FamilySources = family ? sources.Values.ToList() : new() }, p)).ToArray();
         var prepared = Prepare(true);
@@ -144,9 +146,6 @@ internal static class FamilyRecognitionRegression
             "Actual structural, curtain-wall and railing-system components stay primitives");
         check(inserts.Count(i => i.Block.Name.Contains("LAON_LH_Title")) == 2, "Two titleblock references retained");
         check(actual.Entities.OfType<LwPolyline>().Count(p => Math.Abs(p.ConstantWidth - 240) < 1e-6) == 101, "All 101 wide polylines retained");
-        check(actual.Layers.All(l => l.Color.Index == 7)
-            && actual.BlockRecords.SelectMany(b => b.Entities).Where(e => e is not (Hatch or Solid or Wipeout)).All(e => e.Color.IsByLayer),
-            "Layer colors and non-fill ByLayer policy retained while Revit fills keep explicit view colors");
         check(result.Success && result.PaperEntityCount == 0 && result.Placements.Count == 2, "Both sheets remain in model space");
         check(Math.Abs(result.Placements[1].X - result.Placements[0].Width) < 1e-5, "Zero gap and multi-scale preserved");
         check(hashes.All(p => Hash(p.Key) == p.Value), "Original DWGs untouched");

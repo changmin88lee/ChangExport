@@ -104,6 +104,7 @@ public sealed class RevitDwgExportService
                             conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.ExcludedEntities,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
                             conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
+                            conversion.FamilySignaturesComputed, conversion.FamilySignaturesSkipped, conversion.FamilySignatureCacheHits,
                             conversion.FamilyBlockFallbacks, conversion.FamilyBlockMatches });
                         item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {entry.Sheet}: {w}"));
                         foreach (var timing in conversion.TimingsMs) item.TimingsMs[$"{entry.Sheet}:{timing.Key}"] = timing.Value;

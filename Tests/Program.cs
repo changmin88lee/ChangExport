@@ -21,8 +21,17 @@ internal static class Program
             string path = Path.Combine(@"C:\Program Files\Autodesk\Revit 2026", name.Name + ".dll");
             return File.Exists(path) ? AssemblyLoadContext.Default.LoadFromAssemblyPath(path) : null;
         };
-        string output = Path.GetFullPath(args.Length > 1 ? args[1] : "bin/Verification/Tests");
         System.Runtime.CompilerServices.RuntimeHelpers.RunModuleConstructor(typeof(ManagedDwgProcessor).Module.ModuleHandle);
+        if (args.Length > 0 && args[0] == "compare-dwg")
+        {
+            try
+            {
+                PerformanceRegression.Compare(args[1], args[2], Check, normalizePeriodicAngles: true);
+                Console.WriteLine($"PASS: {_checks} checks"); return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        }
+        string output = Path.GetFullPath(args.Length > 1 ? args[1] : "bin/Verification/Tests");
         Directory.CreateDirectory(output);
         try
         {

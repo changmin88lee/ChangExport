@@ -103,6 +103,9 @@ namespace ChangExport.DwgProcessing
         public Dictionary<string, FamilyBlockInfo> FamilyBlocks { get; set; } = new();
         public int FamilyBlockReferences { get; set; }
         public int FamilyBlockDefinitions { get; set; }
+        public int FamilySignaturesComputed { get; set; }
+        public int FamilySignaturesSkipped { get; set; }
+        public int FamilySignatureCacheHits { get; set; }
         public Dictionary<string, int> FamilyBlockFallbacks { get; set; } = new();
         public List<FamilyBlockMatch> FamilyBlockMatches { get; set; } = new();
     }

@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.Tables;
@@ -123,32 +124,81 @@ public sealed partial class ManagedDwgProcessor
 
     private static void DeduplicateFamilies(CadDocument document, BridgeResponse response, GeometryContext? context)
     {
+        var clock = Stopwatch.StartNew();
         var known = new Dictionary<string, FamilyBlockInfo>(response.FamilyBlocks);
         if (context != null) foreach (var pair in context.Families.Where(p => p.Value.Processed)) known.TryAdd(pair.Key, pair.Value);
-        var definitions = new Dictionary<string, (BlockRecord Block, string Signature)>();
+        var definitions = new Dictionary<string, List<(BlockRecord Block, string? Signature, bool Computed)>>();
         var surviving = new Dictionary<string, FamilyBlockInfo>();
         var used = new HashSet<string>(StringComparer.Ordinal);
         var ordered = document.ModelSpace.GetSortedEntities().ToArray();
+        var candidates = new Dictionary<Insert, KeyValuePair<string, FamilyBlockInfo>>(ReferenceEqualityComparer.Instance);
+        foreach (var insert in ordered.OfType<Insert>())
+        {
+            var pair = known.FirstOrDefault(p => insert.Block.Name.Contains(p.Key, StringComparison.Ordinal));
+            if (pair.Value != null) candidates[insert] = pair;
+        }
+        var signatures = new Dictionary<BlockRecord, string?>(ReferenceEqualityComparer.Instance);
         var rebuilt = new List<Entity>();
         bool changed = false;
         for (int index = 0; index < ordered.Length; index++)
         {
             if (ordered[index] is not Insert insert) { rebuilt.Add(ordered[index]); continue; }
-            var pair = known.FirstOrDefault(p => insert.Block.Name.Contains(p.Key, StringComparison.Ordinal));
-            if (pair.Value == null) { rebuilt.Add(insert); continue; }
+            if (!candidates.TryGetValue(insert, out var pair)) { rebuilt.Add(insert); continue; }
             response.FamilyBlockReferences++;
-            string? signature = FamilySignature(insert.Block);
-            string key = pair.Value.Identity + ":" + (signature == null ? Guid.NewGuid().ToString("N") : Hash(signature));
-            if (signature != null && definitions.TryGetValue(key, out var same) && same.Signature == signature)
+            string bucketKey = pair.Value.Identity + ":" + FamilyPrefilterSignature(insert.Block);
+            if (!definitions.TryGetValue(bucketKey, out var bucket))
             {
-                var replacement = new Insert(same.Block) { InsertPoint = insert.InsertPoint, Normal = insert.Normal,
-                    Rotation = insert.Rotation, XScale = insert.XScale, YScale = insert.YScale, ZScale = insert.ZScale };
-                replacement.MatchProperties(insert); insert = replacement; changed = true;
+                definitions[bucketKey] = new() { (insert.Block, null, false) };
+                surviving[insert.Block.Name] = pair.Value;
             }
             else
             {
-                definitions[key] = (insert.Block, signature ?? "");
-                surviving[insert.Block.Name] = pair.Value;
+                string? signature;
+                if (signatures.TryGetValue(insert.Block, out var cached))
+                {
+                    signature = cached;
+                    response.FamilySignatureCacheHits++;
+                }
+                else
+                {
+                    signature = FamilySignature(insert.Block);
+                    signatures[insert.Block] = signature;
+                    response.FamilySignaturesComputed++;
+                }
+                BlockRecord? same = null;
+                if (signature != null)
+                for (int candidateIndex = 0; candidateIndex < bucket.Count; candidateIndex++)
+                {
+                    var candidate = bucket[candidateIndex];
+                    string? other = candidate.Signature;
+                    if (!candidate.Computed)
+                    {
+                        if (signatures.TryGetValue(candidate.Block, out var previous))
+                        {
+                            other = previous;
+                            response.FamilySignatureCacheHits++;
+                        }
+                        else
+                        {
+                            other = FamilySignature(candidate.Block);
+                            signatures[candidate.Block] = other;
+                            response.FamilySignaturesComputed++;
+                        }
+                        bucket[candidateIndex] = (candidate.Block, other, true);
+                    }
+                    if (other == signature) { same = candidate.Block; break; }
+                }
+                if (same != null)
+                {
+                    var replacement = new Insert(same) { InsertPoint = insert.InsertPoint, Normal = insert.Normal,
+                        Rotation = insert.Rotation, XScale = insert.XScale, YScale = insert.YScale, ZScale = insert.ZScale };
+                    replacement.MatchProperties(insert); insert = replacement; changed = true;
+                }
+                else
+                {
+                    bucket.Add((insert.Block, signature, true));
+                    surviving[insert.Block.Name] = pair.Value;
+                }
             }
             used.Add(insert.Block.Name);
             rebuilt.Add(insert);
@@ -165,10 +215,58 @@ public sealed partial class ManagedDwgProcessor
                 document.BlockRecords.Remove(block.Name);
         response.FamilyBlocks = surviving;
         response.FamilyBlockDefinitions = used.Count;
+        response.FamilySignaturesSkipped = response.FamilyBlockReferences - signatures.Count;
+        response.TimingsMs["familyDedup"] = clock.Elapsed.TotalMilliseconds;
         if (response.FamilyBlockReferences > 0)
             response.Warnings.Add($"자동 블록: 배치 {response.FamilyBlockReferences:N0}개 · 공유 정의 {response.FamilyBlockDefinitions:N0}개 · 고정 형상 패밀리와 상세 그룹만 처리");
         foreach (var fallback in response.FamilyBlockFallbacks)
             response.Warnings.Add($"패밀리 개별 객체 유지: {fallback.Key} · {fallback.Value:N0}개");
+    }
+
+    // Cheap, deterministic prefilter only. A matching key never causes reuse by
+    // itself; candidates still pass the existing full structural signature check.
+    // Values derived from the full signature may collide here, which only performs
+    // extra exact comparisons and cannot merge different geometry.
+    private static string FamilyPrefilterSignature(BlockRecord block)
+    {
+        try
+        {
+            var text = new StringBuilder();
+            var path = new HashSet<BlockRecord>();
+            void Number(double value) => text.Append(value == 0 ? "0" : value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append('|');
+            void VisitBlock(BlockRecord current, int depth)
+            {
+                if (depth > 32 || !path.Add(current)) throw new NotSupportedException();
+                try
+                {
+                    var entities = current.GetSortedEntities().ToArray();
+                    text.Append('B').Append(entities.Length).Append('|');
+                    if (entities.Length > 0)
+                    {
+                        Box bounds = Bounds(entities);
+                        Number(bounds.MinX); Number(bounds.MinY); Number(bounds.MaxX); Number(bounds.MaxY);
+                    }
+                    foreach (Entity entity in entities)
+                    {
+                        text.Append(entity.ObjectName).Append('|').Append(entity.Layer.Name).Append('|').Append(entity.LineType.Name).Append('|');
+                        if (entity is TextEntity single) text.Append(single.Value).Append('|');
+                        if (entity is MText multiple) text.Append(multiple.Value).Append('|');
+                        if (entity is Hatch hatch) text.Append(hatch.Pattern?.Name).Append('|').Append(hatch.Paths.Count).Append('|');
+                        if (entity is LwPolyline polyline) text.Append(polyline.Vertices.Count).Append('|');
+                        if (entity is Insert insert)
+                        {
+                            text.Append('A').Append(insert.Attributes.Count).Append('|');
+                            VisitBlock(insert.Block, depth + 1);
+                        }
+                        if (entity is Dimension dimension && dimension.Block != null) VisitBlock(dimension.Block, depth + 1);
+                    }
+                }
+                finally { path.Remove(current); }
+            }
+            VisitBlock(block, 0);
+            return Hash(text.ToString());
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException) { return "FULL"; }
     }
 
     // Exact structural comparison, no geometry rounding or positional tolerance. Unknown
