@@ -67,7 +67,7 @@ internal static class ArcRotationRegression
             LayerStyles = layers, WideLineLayers = wide, FamilySources = families }, p)).ToArray();
         string target = Path.Combine(output, "AA-440_swing-fixed.dwg");
         var result = processor.MergePrepared(new BridgeRequest { RevitSheet = true, UseLayerColors = true,
-            LayerStyles = layers, OutputPath = target }, prepared, output);
+            LayerStyles = layers, WideLineLayers = wide, OutputPath = target }, prepared, output);
         var corrected = DwgReader.Read(target); var previous = ReadShared(previousPath);
         check(result.Success && result.PaperEntityCount == 0, "Actual set saved in model space");
         check(result.FamilyBlockReferences == 3 && result.FamilyBlockDefinitions == 2, "Existing title/bicycle policy unchanged");

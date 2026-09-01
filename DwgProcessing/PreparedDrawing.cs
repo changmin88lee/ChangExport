@@ -44,7 +44,7 @@ public sealed partial class ManagedDwgProcessor
         }
         else document = EditableModel(Merge(request, response, check, drawings), response, check, geometry: geometry);
         ApplyLayerStyles(document, request.LayerStyles);
-        if (request.UseLayerColors) NormalizeLayerColors(document, response, check);
+        if (request.UseLayerColors) NormalizeLayerColors(document, response, check, geometry);
         DeduplicateFamilies(document, response, geometry);
         response.TimingsMs["merge"] = clock.Elapsed.TotalMilliseconds;
         return SavePrepared(document, response, request.OutputPath, workingDirectory, check);

@@ -1,6 +1,7 @@
 using Autodesk.Revit.DB;
 using ChangExport.DwgProcessing;
 using ChangExport.Models;
+using RevitColor = Autodesk.Revit.DB.Color;
 
 namespace ChangExport.Export;
 
@@ -8,7 +9,8 @@ internal static class ExportGeometryOptions
 {
     // Output-only layer names distinguish line styles even when the user maps several
     // styles/categories to one final layer. Never rename a Revit style or element.
-    internal static List<WideLineLayer> ConfigureWideLines(DWGExportOptions options, IReadOnlyList<RevitLayerRow> rows, string keyword)
+    internal static List<WideLineLayer> ConfigureWideLines(Document document, DWGExportOptions options,
+        IReadOnlyList<RevitLayerRow> rows, string keyword)
     {
         var result = new List<WideLineLayer>();
         if (string.IsNullOrWhiteSpace(keyword)) return result;
@@ -16,18 +18,28 @@ internal static class ExportGeometryOptions
         foreach (var row in rows.Where(r => !r.IsCustom && r.CategoryId == (long)BuiltInCategory.OST_Lines
             && r.Subcategory.Length > 0 && r.Subcategory.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
         {
+            Category? style = Category.GetCategory(document, new ElementId(row.SubcategoryId ?? 0));
+            if (style == null || style.Parent?.Id.Value != (long)BuiltInCategory.OST_Lines)
+                throw new InvalidDataException($"전역폭 선스타일의 Revit 색상을 읽을 수 없습니다: {row.Subcategory}");
+            RevitColor revit = style.LineColor;
+            int rgb = (revit.Red << 16) | (revit.Green << 8) | revit.Blue;
+            // Revit black must display white in CAD and Revit white must display
+            // black. Every chromatic color is kept byte-for-byte.
+            int displayRgb = CadDisplayRgb(rgb);
             using var key = new ExportLayerKey(row.Category, row.Subcategory, (SpecialType)row.SpecialType);
             if (!table.ContainsKey(key)) continue;
             using var value = table[key];
             string token = "CE_WIDE_" + Guid.NewGuid().ToString("N");
-            result.Add(new() { NativeLayer = token + "_P", TargetLayer = row.Layer, StyleName = row.Subcategory });
-            result.Add(new() { NativeLayer = token + "_C", TargetLayer = row.CutLayer, StyleName = row.Subcategory });
+            result.Add(new() { NativeLayer = token + "_P", TargetLayer = row.Layer, StyleName = row.Subcategory, DisplayRgb = displayRgb });
+            result.Add(new() { NativeLayer = token + "_C", TargetLayer = row.CutLayer, StyleName = row.Subcategory, DisplayRgb = displayRgb });
             value.LayerName = token + "_P"; value.CutLayerName = token + "_C";
             table[key] = value;
         }
         options.SetExportLayerTable(table);
         return result;
     }
+
+    internal static int CadDisplayRgb(int revitRgb) => revitRgb == 0 ? 0xFFFFFF : revitRgb == 0xFFFFFF ? 0 : revitRgb;
 
     internal static List<FamilyBlockSource> ReadBlockSources(Document document)
     {

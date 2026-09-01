@@ -47,7 +47,10 @@ public sealed partial class ManagedDwgProcessor
     }
 
     // Called only on detached output data, after filter markers and block inheritance.
-    internal static void NormalizeLayerColors(CadDocument document, BridgeResponse response, Action check)
+    internal static void NormalizeLayerColors(CadDocument document, BridgeResponse response, Action check) =>
+        NormalizeLayerColors(document, response, check, null);
+
+    private static void NormalizeLayerColors(CadDocument document, BridgeResponse response, Action check, GeometryContext? geometry)
     {
         foreach (var style in document.DimensionStyles)
             style.DimensionLineColor = style.ExtensionLineColor = style.TextColor = Color.ByLayer;
@@ -61,7 +64,7 @@ public sealed partial class ManagedDwgProcessor
 
         void Normalize(Entity entity)
         {
-            if (IsRevitFillDisplay(entity) || IsRevitMask(entity)) return;
+            if (IsRevitFillDisplay(entity) || IsRevitMask(entity) || geometry?.WideColorEntities.Contains(entity) == true) return;
             if (!entity.Color.IsByLayer || entity.BookColor != null) response.NormalizedEntityColors++;
             entity.Color = Color.ByLayer; entity.BookColor = null;
             if (entity is MText text) text.Value = RemoveInlineColors(text.Value);

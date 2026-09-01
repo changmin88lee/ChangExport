@@ -58,6 +58,7 @@ public sealed partial class ManagedDwgProcessor
                     PreserveNestedRevitFillAppearance(clone, parent, response, new HashSet<BlockRecord>());
                     var ready = PlaceFamily(clone.Block, new Transform(transform.Matrix * InsertTransform(clone).Matrix));
                     ready.MatchProperties(clone);
+                    CapturePreparedWideColors(ready, geometry);
                     output.Add(ready); return;
                 }
                 bool planarSimpleMirror = Math.Abs(Math.Abs(insert.XScale) - Math.Abs(insert.YScale)) < Epsilon
@@ -79,6 +80,7 @@ public sealed partial class ManagedDwgProcessor
                         preserved = new Insert(wrapper) { SpatialFilter = new SpatialFilter(SpatialFilter.SpatialFilterEntryName)
                         { Origin = XYZ.Zero, Normal = XYZ.AxisZ, DisplayBoundary = true, BoundaryPoints = polygon } };
                     }
+                    CapturePreparedWideColors(preserved, geometry);
                     output.Add(preserved);
                     if (geometry?.Request.WideLineLayers.Count > 0)
                     {
@@ -99,7 +101,7 @@ public sealed partial class ManagedDwgProcessor
                 int familyStart = output.Count;
                 foreach (Entity child in sourceInsert.Block.GetSortedEntities()) Add(child, combined, activeClips, insert, depth + 1, familyMember || family != null, nativeDisplay);
                 if (!familyMember && family is { Processed: false })
-                    GroupFamily(output, familyStart, combined, family, response, geometry!.Request.UseLayerColors);
+                    GroupFamily(output, familyStart, combined, family, response, geometry!);
                 // Attribute positions are already in the enclosing insert's coordinates.
                 foreach (AttributeEntity attribute in sourceInsert.Attributes)
                 {
@@ -115,22 +117,23 @@ public sealed partial class ManagedDwgProcessor
                 entity = AttributeText(definition);
             }
             TransformEditable(entity, transform, ref dimensionIndex);
+            if (IsPreparedWideColor(original, geometry)) geometry!.WideColorEntities.Add(entity);
             var wide = WidthSource(entity, nativeDisplay, geometry);
-            if (clips.Count == 0) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response)); return; }
+            if (clips.Count == 0) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response, geometry)); return; }
             if (entity is Line line)
             {
-                foreach (Line segment in ClipLine(line, clips)) output.Add(MakeWideLine(segment, wide, response.ModelScale, response));
+                foreach (Line segment in ClipLine(line, clips)) output.Add(MakeWideLine(segment, wide, response.ModelScale, response, geometry));
                 return;
             }
             Box bounds = Bounds(entity);
             if (clips.Any(p => Outside(bounds, p))) return;
-            if (clips.All(p => Inside(bounds, p))) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response)); return; }
+            if (clips.All(p => Inside(bounds, p))) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response, geometry)); return; }
 
             // A boundary-crossing text, hatch or curved entity must not be dropped or
             // approximated as arbitrary short lines. Retain only this entity's clip,
             // not the entire sheet/view and its unrelated model contents.
             string kind = entity.ObjectName;
-            entity = MakeWideLine(entity, wide, response.ModelScale, response);
+            entity = MakeWideLine(entity, wide, response.ModelScale, response, geometry);
             retained[kind] = retained.GetValueOrDefault(kind) + 1;
             foreach (var polygon in clips)
             {

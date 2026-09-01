@@ -27,6 +27,9 @@ namespace ChangExport.DwgProcessing
         public string NativeLayer { get; set; } = "";
         public string TargetLayer { get; set; } = "";
         public string StyleName { get; set; } = "";
+        // Explicit output RGB for successfully converted ## polylines. Null keeps
+        // compatibility with historical manifests that predate color preservation.
+        public int? DisplayRgb { get; set; }
     }
 
     public sealed class FamilyBlockSource
@@ -95,6 +98,7 @@ namespace ChangExport.DwgProcessing
         public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }
         public int WideLineSkipped { get; set; }
+        public int PreservedWideLineColors { get; set; }
         public Dictionary<string, int> WideLineStyleCounts { get; set; } = new();
         public Dictionary<string, FamilyBlockInfo> FamilyBlocks { get; set; } = new();
         public int FamilyBlockReferences { get; set; }

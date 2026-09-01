@@ -73,7 +73,7 @@ public sealed partial class ManagedDwgProcessor
         .FirstOrDefault(p => name.Contains(p.Key, StringComparison.Ordinal)).Value;
 
     private static void GroupFamily(List<Entity> output, int start, Transform transform, FamilyBlockInfo info,
-        BridgeResponse response, bool useLayerColors)
+        BridgeResponse response, GeometryContext geometry)
     {
         var members = output.Skip(start).ToArray();
         void Keep(string reason) => response.FamilyBlockFallbacks[reason] = response.FamilyBlockFallbacks.GetValueOrDefault(reason) + 1;
@@ -89,7 +89,10 @@ public sealed partial class ManagedDwgProcessor
         {
             var clone = (Entity)member.Clone();
             TransformEditable(clone, new Transform(inverse), ref dimension);
-            if (useLayerColors && !IsRevitFillDisplay(clone) && !IsRevitMask(clone)) { clone.Color = Color.ByLayer; clone.BookColor = null; }
+            bool preserveWideColor = geometry.WideColorEntities.Contains(member);
+            if (geometry.Request.UseLayerColors && !IsRevitFillDisplay(clone) && !IsRevitMask(clone) && !preserveWideColor)
+            { clone.Color = Color.ByLayer; clone.BookColor = null; }
+            if (preserveWideColor) geometry.WideColorEntities.Add(clone);
             local.Add(clone);
         }
         string label = new(info.Label.Select(c => "<>/\\\":;?*|=,".Contains(c) ? '_' : c).ToArray());

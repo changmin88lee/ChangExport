@@ -24,7 +24,7 @@ public sealed class RevitDwgExportService
         options.MergedViews = false; // Keep native view references for explicit in-process binding.
         options.FileVersion = ACADVersion.R2010; // Export-only override; never modify the project's saved setup.
         options.TargetUnit = ExportUnit.Millimeter;
-        var wideLines = ExportGeometryOptions.ConfigureWideLines(options, layers, wideLineKeyword);
+        var wideLines = ExportGeometryOptions.ConfigureWideLines(document, options, layers, wideLineKeyword);
         var blockSources = ExportGeometryOptions.ReadBlockSources(document);
         var excludedLayers = RevitLayerMappingService.InternalExcludedLayers(layers);
         try
@@ -102,7 +102,8 @@ public sealed class RevitDwgExportService
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
                             conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors,
                             conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.ExcludedEntities,
-                            conversion.WideLineConverted, conversion.WideLineSkipped, conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
+                            conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
+                            conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
                             conversion.FamilyBlockFallbacks, conversion.FamilyBlockMatches });
                         item.Warnings.AddRange(conversion.Warnings.Select(w => $"시트 {entry.Sheet}: {w}"));
                         foreach (var timing in conversion.TimingsMs) item.TimingsMs[$"{entry.Sheet}:{timing.Key}"] = timing.Value;
@@ -113,7 +114,8 @@ public sealed class RevitDwgExportService
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
                     var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
                         Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, UseLayerColors = true,
-                        LayerStyles = RevitLayerMappingService.GetAppearances(layers), ExcludedLayers = excludedLayers },
+                        LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines,
+                        ExcludedLayers = excludedLayers },
                         prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
                     foreach (var timing in merged.TimingsMs) item.TimingsMs[timing.Key] = timing.Value;
                     CheckCancel(cancel);
@@ -140,6 +142,7 @@ public sealed class RevitDwgExportService
                 invisibleLinePolicy = "Revit <Invisible Lines> removed on private staging layer",
                 layerColors = RevitLayerMappingService.GetAppearances(layers),
                 wideLineKeyword, wideLineLayers = wideLines, wideLineWidthSource = "Native Revit DWG lineweight in paper mm × sheet scale",
+                wideLineColorPolicy = "Only successfully converted ## polylines use explicit Revit line-style RGB; black/white are swapped",
                 familyBlockPolicy = "Automatic fixed-geometry loadable families and Revit detail groups; excludes in-place, path/sketch/two-level/adaptive families, structural framing/columns, curtain wall and railing system components",
                 blockSources = blockSources.Select(f => new { f.Identity, f.Label, f.Category, f.SourceKind, f.PlacementType,
                     f.IsTitleBlock, f.IsDetailGroup, f.NativeLabels, f.NativeElementIds, f.ExclusionReason, knownPrefixCount = f.NativePrefixes.Count }),

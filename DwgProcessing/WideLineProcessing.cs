@@ -2,17 +2,19 @@ using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.Tables;
 using CSMath;
+using CadColor = ACadSharp.Color;
 
 namespace ChangExport.DwgProcessing;
 
 public sealed partial class ManagedDwgProcessor
 {
-    private sealed record WideLineSource(string Style, double PaperMm);
+    private sealed record WideLineSource(string Style, double PaperMm, int? DisplayRgb);
     private sealed record NativeLineDisplay(string Layer, LineWeightType LayerWeight, LineWeightType Weight);
     private sealed class GeometryContext
     {
         public BridgeRequest Request { get; }
         public Dictionary<Entity, NativeLineDisplay> NativeDisplays { get; } = new(ReferenceEqualityComparer.Instance);
+        public HashSet<Entity> WideColorEntities { get; } = new(ReferenceEqualityComparer.Instance);
         public Dictionary<string, FamilyBlockInfo> Families { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, List<FamilyBlockSource>> FamilyIndex { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, List<FamilyBlockSource>> FamilyNames { get; } = new(StringComparer.Ordinal);
@@ -79,7 +81,7 @@ public sealed partial class ManagedDwgProcessor
     {
         if (display == null || geometry == null || entity is not (Line or Arc or Circle or LwPolyline or Polyline2D or Spline or Ellipse)) return null;
         var rule = WideLayer(display.Layer, geometry.Request.WideLineLayers);
-        return rule == null ? null : new(rule.StyleName, (short)display.Weight > 0 ? (short)display.Weight / 100d : 0);
+        return rule == null ? null : new(rule.StyleName, (short)display.Weight > 0 ? (short)display.Weight / 100d : 0, rule.DisplayRgb);
     }
 
     private static void RestoreWideLayers(CadDocument document, GeometryContext context)
@@ -98,7 +100,8 @@ public sealed partial class ManagedDwgProcessor
             document.Layers.Remove(layer.Name);
     }
 
-    private static Entity MakeWideLine(Entity entity, WideLineSource? source, double sheetScale, BridgeResponse response)
+    private static Entity MakeWideLine(Entity entity, WideLineSource? source, double sheetScale,
+        BridgeResponse response, GeometryContext? geometry)
     {
         if (source == null) return entity;
         double width = source.PaperMm * sheetScale;
@@ -134,8 +137,35 @@ public sealed partial class ManagedDwgProcessor
         foreach (var vertex in poly.Vertices) vertex.StartWidth = vertex.EndWidth = 0;
         // Width is geometric; avoid applying an additional display/plot lineweight.
         poly.LineWeight = LineWeightType.W0;
+        if (source.DisplayRgb is int rgb)
+        {
+            poly.Color = new CadColor((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb);
+            poly.BookColor = null;
+            geometry?.WideColorEntities.Add(poly);
+            response.PreservedWideLineColors++;
+        }
         response.WideLineConverted++;
         response.WideLineStyleCounts[source.Style] = response.WideLineStyleCounts.GetValueOrDefault(source.Style) + 1;
         return poly;
+    }
+
+    private static bool IsPreparedWideColor(Entity entity, GeometryContext? geometry)
+    {
+        if (geometry == null || geometry.NativeDisplays.Count != 0 || entity is not LwPolyline poly
+            || poly.ConstantWidth <= 0 || entity.Color.IsByLayer || entity.Color.IsByBlock) return false;
+        return geometry.Request.WideLineLayers.Any(rule => entity.Layer.Name.Equals(rule.TargetLayer, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void CapturePreparedWideColors(Entity root, GeometryContext? geometry)
+    {
+        if (geometry == null || geometry.NativeDisplays.Count != 0) return;
+        var visited = new HashSet<BlockRecord>();
+        void Visit(Entity entity)
+        {
+            if (IsPreparedWideColor(entity, geometry)) geometry.WideColorEntities.Add(entity);
+            BlockRecord? block = entity is Insert insert ? insert.Block : entity is Dimension dimension ? dimension.Block : null;
+            if (block != null && visited.Add(block)) foreach (Entity child in block.Entities) Visit(child);
+        }
+        Visit(root);
     }
 }

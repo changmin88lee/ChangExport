@@ -26,15 +26,20 @@ public sealed partial class ManagedDwgProcessor
         if (request.Operation is not ("Flatten" or "Merge")) throw new ArgumentException("지원하지 않는 DWG 작업입니다.");
         var response = new BridgeResponse { OutputPath = request.OutputPath };
         CadDocument document;
+        GeometryContext? geometry = null;
         if (request.Operation == "Flatten")
         {
             var prepared = Prepare(request, inputDrawing, cancel, pump);
             return SavePrepared(prepared.Document, prepared.Response, request.OutputPath, workingDirectory, Check);
         }
-        else document = Merge(request, response, Check);
-        if (request.RevitSheet) document = EditableModel(document, response, Check);
+        else
+        {
+            geometry = new GeometryContext(request);
+            document = Merge(request, response, Check);
+        }
+        if (request.RevitSheet) document = EditableModel(document, response, Check, geometry: geometry);
         ApplyLayerStyles(document, request.LayerStyles);
-        if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
+        if (request.UseLayerColors) NormalizeLayerColors(document, response, Check, geometry);
         return SavePrepared(document, response, request.OutputPath, workingDirectory, Check);
     }
 
@@ -67,7 +72,7 @@ public sealed partial class ManagedDwgProcessor
         ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
             .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         // Marker colors must be consumed by ApplyCustomRemaps before removing overrides.
-        if (request.UseLayerColors) NormalizeLayerColors(document, response, Check);
+        if (request.UseLayerColors) NormalizeLayerColors(document, response, Check, geometry);
         DeduplicateFamilies(document, response, geometry);
         response.FamilyBlockMatches = geometry.FamilyMatches;
         int unmatchedFamilies = geometry.FamilyMatches.Count(m => m.Status.EndsWith("개별 객체 유지", StringComparison.Ordinal));

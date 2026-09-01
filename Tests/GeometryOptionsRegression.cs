@@ -6,6 +6,7 @@ using ACadSharp.IO;
 using ACadSharp.Objects;
 using ACadSharp.Tables;
 using ChangExport.DwgProcessing;
+using ChangExport.Export;
 using ChangExport.Models;
 using ChangExport.Standards;
 using CSMath;
@@ -21,7 +22,7 @@ internal static class GeometryOptionsRegression
         var column2 = new FamilyBlockSource { Identity = "column:C2", Label = "기둥 - C2", NativePrefixes = new() { "기둥 - C2-102-" } };
         BridgeRequest Request() => new() { RevitSheet = true, UseLayerColors = true,
             FamilySources = new() { frames, column, column2 },
-            WideLineLayers = new() { new() { NativeLayer = "CE_TEST_WIDE", TargetLayer = "공통", StyleName = "방수##" } },
+            WideLineLayers = new() { new() { NativeLayer = "CE_TEST_WIDE", TargetLayer = "공통", StyleName = "방수##", DisplayRgb = 0x0CB42C } },
             LayerStyles = new() { new() { Layer = "공통", Color = 7, Lineweight = 211 } } };
         var natives = new List<string>();
         foreach (int scale in new[] { 100, 200 })
@@ -31,7 +32,8 @@ internal static class GeometryOptionsRegression
             var common = new Layer("공통") { LineWeight = LineWeightType.W50 }; doc.Layers.Add(common);
             doc.Entities.Add(new Line { StartPoint = new XYZ(100, 300, 0), EndPoint = new XYZ(800, 300, 0), Layer = wide, LineWeight = LineWeightType.ByLayer });
             doc.Entities.Add(new Line { StartPoint = new XYZ(100, 400, 0), EndPoint = new XYZ(800, 400, 0), Layer = wide, LineWeight = LineWeightType.W80 });
-            doc.Entities.Add(new Line { StartPoint = new XYZ(100, 500, 0), EndPoint = new XYZ(800, 500, 0), Layer = common });
+            doc.Entities.Add(new Line { StartPoint = new XYZ(100, 500, 0), EndPoint = new XYZ(800, 500, 0), Layer = common,
+                Color = new Color(80, 180, 230) });
             doc.Entities.Add(new Arc { Center = new XYZ(1200, 300, 0), Radius = 100, StartAngle = 0, EndAngle = Math.PI, Layer = wide, LineWeight = LineWeightType.W50 });
             doc.Entities.Add(new Circle { Center = new XYZ(1600, 300, 0), Radius = 100, Layer = wide, LineWeight = LineWeightType.W50 });
             var c1 = new BlockRecord("기둥 - C1-101-평면"); c1.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(200, 0, 0), Layer = common });
@@ -52,8 +54,11 @@ internal static class GeometryOptionsRegression
             check(polys.Length == 4, "Same output layer does not convert unmarked lines");
             check(polys.Count(p => Math.Abs(p.ConstantWidth - .5 * scale) < 1e-6) == 3, "Original ByLayer weight retained despite requested 2.11 mm layer weight");
             near(polys.Max(p => p.ConstantWidth), .8 * scale, "Individual Revit output weight override used");
-            check(polys.All(p => p.Color.IsByLayer && p.LineWeight == LineWeightType.W0), "Wide lines retain ByLayer colors without second lineweight");
-            check(actual.Entities.OfType<Line>().Any(l => l.Layer.Name == "공통"), "Unmarked line remains LINE");
+            check(polys.All(p => !p.Color.IsByLayer && !p.Color.IsByBlock && p.Color.R == 12 && p.Color.G == 180 && p.Color.B == 44
+                && p.LineWeight == LineWeightType.W0), "Only converted ## polylines retain forced Revit RGB without second lineweight");
+            check(result.PreservedWideLineColors == 4, "Each successfully converted ## polyline records preserved color");
+            check(actual.Entities.OfType<Line>().Any(l => l.Layer.Name == "공통" && l.Color.IsByLayer),
+                "Unmarked detail line remains LINE and follows its layer color");
             check(actual.Layers.All(l => !l.Name.Contains("CE_TEST_WIDE")), "No temporary width layer leaks");
             check(result.FamilyBlockReferences == 4, "Two C1, one C2, one titleblock become references");
             check(result.FamilyBlockDefinitions == 3, "C1 instances share one definition, C2 remains separate");
@@ -65,7 +70,8 @@ internal static class GeometryOptionsRegression
             var plain = Request(); plain.FamilySources.Clear(); plain.Operation = "Flatten"; plain.OutputPath = Path.Combine(output, "plain-" + scale + ".dwg");
             processor.Run(plain, input, output);
             var explode = new BridgeRequest { Operation = "Merge", RevitSheet = true, UseLayerColors = true,
-                Inputs = new() { request.OutputPath }, OutputPath = Path.Combine(output, "exploded-" + scale + ".dwg") };
+                Inputs = new() { request.OutputPath }, OutputPath = Path.Combine(output, "exploded-" + scale + ".dwg"),
+                WideLineLayers = Request().WideLineLayers };
             processor.Run(explode, request.OutputPath, output);
             PerformanceRegression.Compare(plain.OutputPath, explode.OutputPath, check, normalizePeriodicAngles: true);
         }
@@ -73,14 +79,20 @@ internal static class GeometryOptionsRegression
         {
             var prepared = natives.Select(n => processor.Prepare(Request(), n)).ToArray();
             var request = new BridgeRequest { RevitSheet = true, UseLayerColors = true, Direction = direction,
-                OutputPath = Path.Combine(output, "geometry-set-" + direction + ".dwg") };
+                OutputPath = Path.Combine(output, "geometry-set-" + direction + ".dwg"), WideLineLayers = Request().WideLineLayers };
             var result = processor.MergePrepared(request, prepared, output);
             check(result.FamilyBlockReferences == 8, "Merge keeps family references, not whole sheet blocks");
             var actual = DwgReader.Read(request.OutputPath);
             check(actual.Entities.OfType<LwPolyline>().Any(p => p.ConstantWidth == 50) && actual.Entities.OfType<LwPolyline>().Any(p => p.ConstantWidth == 100), "Merge preserves 100/200 sheet widths without double scaling");
+            check(actual.Entities.OfType<LwPolyline>().Where(p => p.ConstantWidth > 0).All(p => p.Color.R == 12 && p.Color.G == 180 && p.Color.B == 44),
+                "Prepared ## polyline RGB survives final multi-sheet merge");
             near(result.Placements[0].Width, 42000, "First sheet extents unchanged"); near(result.Placements[1].Width, 84000, "Second sheet extents unchanged");
         }
         string configFile = Path.Combine(output, "geometry-settings.json");
+        check(ExportGeometryOptions.CadDisplayRgb(0x000000) == 0xFFFFFF
+            && ExportGeometryOptions.CadDisplayRgb(0xFFFFFF) == 0x000000
+            && ExportGeometryOptions.CadDisplayRgb(0x12B42C) == 0x12B42C,
+            "Revit black/white swap for CAD while chromatic RGB remains unchanged");
         var store = new ExportConfigurationStore(configFile); check(store.Load().WideLineKeyword == "##", "Default keyword is ##");
         var config = new RevitExportConfiguration { WideLineKeyword = "전역폭" }; store.Save(config);
         check(store.Load().WideLineKeyword == "전역폭", "Custom keyword persists"); config.WideLineKeyword = ""; store.Save(config);
