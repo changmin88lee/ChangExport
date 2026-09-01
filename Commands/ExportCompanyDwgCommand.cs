@@ -22,6 +22,7 @@ public sealed class ExportCompanyDwgCommand : IExternalCommand
             var mapping = new RevitLayerMappingService(document);
             using var settings = new ExportSettingsForm(sheets, SheetSetService.ReadSets(document, configuration, sheets),
                 RevitLayerMappingService.TemplateChoices(configuration), configuration.SheetTemplateIds,
+                configuration.SheetSpacingMm,
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "창Export", DateTime.Now.ToString("yyyyMMdd")),
                 (sets, assignments) => { SheetSetService.ApplyAssignments(configuration, sets, assignments); store.Save(configuration); });
             if (settings.ShowDialog() != System.Windows.Forms.DialogResult.OK) return Result.Cancelled;

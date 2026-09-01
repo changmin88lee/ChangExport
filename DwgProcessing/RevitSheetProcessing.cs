@@ -40,10 +40,13 @@ public sealed partial class ManagedDwgProcessor
 
     private static bool IsEnabledViewport(Viewport v) => v.ActiveStatus != 0 && !v.Status.HasFlag(ViewportStatusFlags.ViewportOff);
 
-    private static void BindReferences(CadDocument source, string path, List<string> warnings, Action check, HashSet<string> chain, Dictionary<string, string> layerNames, Action<CadDocument>? prepare = null)
+    private static int BindReferences(CadDocument source, string path, List<string> warnings, Action check, HashSet<string> chain,
+        Dictionary<string, string> layerNames, IReadOnlyList<ColorLayerRemap> remaps, Action<CadDocument>? prepare = null)
     {
         string fullPath = Path.GetFullPath(path);
         if (chain.Count >= 32 || !chain.Add(fullPath)) throw new InvalidDataException("외부 참조 순환 또는 깊이 초과: " + fullPath);
+        int ignoredContainerMarkers = 0;
+        var markerRgb = remaps.Select(map => ColorRgb(new ACadSharp.Color((short)map.MarkerAci))).ToHashSet();
         try
         {
             int index = 0;
@@ -60,7 +63,17 @@ public sealed partial class ManagedDwgProcessor
                 CadDocument reference = Read(candidate, warnings);
                 prepare?.Invoke(reference);
                 var nestedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                BindReferences(reference, candidate, warnings, check, chain, nestedNames, prepare);
+                ignoredContainerMarkers += BindReferences(reference, candidate, warnings, check, chain, nestedNames, remaps, prepare);
+                foreach (Insert container in source.BlockRecords.SelectMany(record => record.Entities).OfType<Insert>()
+                    .Where(insert => ReferenceEquals(insert.Block, block)))
+                {
+                    // Revit can put one Part override marker on the placed-view XREF
+                    // container. It identifies no Revit element and must never be
+                    // inherited by every line, dimension and annotation in the view.
+                    if (container.Color.IsByLayer || container.Color.IsByBlock || !markerRgb.Contains(ColorRgb(container.Color))) continue;
+                    container.Color = ACadSharp.Color.ByLayer;
+                    ignoredContainerMarkers++;
+                }
                 string prefix = "CE_X" + ++index + "_";
                 // Honor namespaced host layers, including per-viewport frozen layers.
                 var names = new Dictionary<string, Layer>(StringComparer.OrdinalIgnoreCase);
@@ -101,6 +114,7 @@ public sealed partial class ManagedDwgProcessor
             }
         }
         finally { chain.Remove(fullPath); }
+        return ignoredContainerMarkers;
     }
 
     private static void RestoreReferenceLayerNames(CadDocument document, Dictionary<string, string> names, List<string> warnings)

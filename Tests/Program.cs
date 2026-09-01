@@ -197,7 +197,7 @@ internal static class Program
         var assignments = sheets.ToDictionary(s => s.UniqueId, _ => "template");
         using (var sets = new SheetGroupManagerForm(sheets, grouped, templateChoices, assignments))
         { Render(sets, Path.Combine(output, "sets.png")); Check(Descendants(sets).OfType<ComboBox>().Any(c => c.Text == "구조도 DWG"), "Sheet cards expose their assigned DWG layer template"); sets.Size = sets.MinimumSize; Render(sets, Path.Combine(output, "sets-small.png")); }
-        using (var export = new ExportSettingsForm(sheets, grouped, templateChoices, assignments, output, (_, _) => { }))
+        using (var export = new ExportSettingsForm(sheets, grouped, templateChoices, assignments, 2500, output, (_, _) => { }))
         {
             Render(export, Path.Combine(output, "export.png")); Check(export.SelectedSets.Count == grouped.Count, "Export selects whole sets");
             Check(!Descendants(export).OfType<TextBox>().Any(t => t.AccessibleName == "전역폭 판별 문자열")

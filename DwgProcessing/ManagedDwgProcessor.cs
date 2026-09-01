@@ -55,7 +55,10 @@ public sealed partial class ManagedDwgProcessor
         TagFamilyBlocks(source, geometry);
         response.TimingsMs["read"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         var referenceLayers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        BindReferences(source, inputDrawing, response.Warnings, Check, new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers, d => TagFamilyBlocks(d, geometry));
+        response.FilterContainerMarkersIgnored = BindReferences(source, inputDrawing, response.Warnings, Check,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), referenceLayers, request.ColorRemaps, d => TagFamilyBlocks(d, geometry));
+        if (response.FilterContainerMarkersIgnored > 0)
+            response.Warnings.Add($"재료/유형 필터 보호: 배치 뷰 외부참조 식별색 {response.FilterContainerMarkersIgnored:N0}개를 전체 뷰에 전파하지 않았습니다.");
         RemoveExcludedGeometry(source, request.ExcludedLayers, response);
         response.TimingsMs["bindReferences"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         if (request.RevitSheet)

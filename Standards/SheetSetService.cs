@@ -42,9 +42,10 @@ public static class SheetSetService
         config.SheetTemplateIds = new Dictionary<string, string>(assignments, StringComparer.Ordinal);
         foreach (var set in config.SheetSets)
         {
-            var ids = set.SheetUniqueIds.Select(id => config.SheetTemplateIds.GetValueOrDefault(id, string.Empty))
-                .Distinct(StringComparer.Ordinal).ToList();
-            set.TemplateId = ids.Count == 1 ? ids[0] : string.Empty;
+            set.MarginMm = 0;
+            foreach (string id in set.SheetUniqueIds)
+                if (string.IsNullOrWhiteSpace(set.TemplateId)) config.SheetTemplateIds.Remove(id);
+                else config.SheetTemplateIds[id] = set.TemplateId;
         }
     }
 }

@@ -16,6 +16,7 @@ internal static class RevitSheetRegression
         leaf.Header.InsUnits = UnitsType.Millimeters;
         leaf.Layers.Add(new Layer("S-COL") { Color = new ACadSharp.Color(3) });
         leaf.Entities.Add(new Line { Layer = leaf.Layers["S-COL"], StartPoint = new XYZ(0, 0, 0), EndPoint = new XYZ(1000, 1000, 0) });
+        leaf.Entities.Add(new Line { StartPoint = new XYZ(0, 100, 0), EndPoint = new XYZ(1000, 100, 0), Color = new ACadSharp.Color(201) });
         leaf.Entities.Add(new MText { Value = "실제 뷰 본체", Height = 100, InsertPoint = new XYZ(500, 500, 0) });
         string leafPath = Path.Combine(output, "revit-view.dwg"); DwgWriter.Write(leafPath, leaf);
         var doc = new CadDocument(ACadVersion.AC1024); doc.Header.InsUnits = UnitsType.Millimeters;
@@ -29,15 +30,26 @@ internal static class RevitSheetRegression
             ViewCenter = new XY(6, 4.5), ViewDirection = XYZ.AxisZ, ActiveStatus = 1,
             Status = ViewportStatusFlags.CurrentlyAlwaysEnabled | ViewportStatusFlags.UcsIconVisibility });
         doc.PaperSpace.Entities.Add(new LwPolyline(new[] { XY.Zero, new XY(420, 0), new XY(420, 297), new XY(0, 297) }.Select(p => new LwPolyline.Vertex(p))) { IsClosed = true });
-        doc.Entities.Add(new Insert(new BlockRecord("X1", Path.GetFileName(leafPath))));
+        doc.Entities.Add(new Insert(new BlockRecord("X1", Path.GetFileName(leafPath))) { Color = new ACadSharp.Color(200) });
         string input = Path.Combine(output, "revit-sheet-source.dwg"), target = Path.Combine(output, "revit-sheet-final.dwg"); DwgWriter.Write(input, doc);
-        var result = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", RevitSheet = true, OutputPath = target }, input, output);
+        var result = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", RevitSheet = true, OutputPath = target,
+            ColorRemaps = new()
+            {
+                new() { MarkerAci = 200, Layer = "A-MATERIAL", Color = 4, RuleId = "material", RemapFills = true, BoundaryPriority = 700 },
+                new() { MarkerAci = 201, Layer = "A-MATERIAL-CUT", Color = 4, RuleId = "material", RemapFills = true, BoundaryPriority = 700 }
+            } }, input, output);
         var saved = DwgReader.Read(target);
         check(!saved.Entities.OfType<Insert>().Any(), "Simple Revit output is individual entities, not a sheet block");
         near(result.ModelScale, 100, "First actual viewport determines 1:100 model scaling, not default paper viewport");
         near(saved.Header.ModelSpaceExtMax.X - saved.Header.ModelSpaceExtMin.X, 42000, "A3 frame enlarged 100 times in millimeters");
         near(saved.Header.ModelSpaceExtMax.Y - saved.Header.ModelSpaceExtMin.Y, 29700, "A3 frame height enlarged 100 times");
-        near(saved.Entities.OfType<Line>().Single().EndPoint.DistanceFrom(saved.Entities.OfType<Line>().Single().StartPoint), Math.Sqrt(2) * 1000, "Referenced line actual length retained");
+        var sourceLine = saved.Entities.OfType<Line>().Single(line => line.Layer.Name == "S-COL");
+        near(sourceLine.EndPoint.DistanceFrom(sourceLine.StartPoint), Math.Sqrt(2) * 1000, "Referenced line actual length retained");
+        check(result.FilterContainerMarkersIgnored == 1
+            && saved.Entities.OfType<Line>().Count(line => line.Layer.Name == "S-COL") == 1
+            && saved.Entities.OfType<Line>().Count(line => line.Layer.Name == "A-MATERIAL-CUT") == 1
+            && !saved.Entities.Any(entity => entity.Layer.Name == "A-MATERIAL"),
+            "Material marker on a placed-view XREF does not recolor unrelated view geometry; leaf material markers still remap");
         check(result.ConvertedViewports == 1, "Default layout viewport skipped independently of order");
         check(saved.BlockRecords.All(b => (b.Flags & (BlockTypeFlags.XRef | BlockTypeFlags.XRefOverlay)) == 0), "No external reference remains");
         check(saved.BlockRecords.SelectMany(b => b.Entities).Any(e => e is Line && e.Layer.Name == "S-COL"), "Referenced model geometry and Revit category layer name retained");

@@ -31,7 +31,7 @@ public sealed class SheetGroupManagerForm : Form
         Controls.Add(root);
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         title.Controls.Add(UiTheme.Heading("시트를 선택하여 세트로 묶으세요"));
-        title.Controls.Add(UiTheme.Muted("시트별 DWG 레이어 템플릿을 지정하세요. 같은 템플릿끼리만 한 세트로 묶을 수 있습니다.")); root.Controls.Add(title);
+        title.Controls.Add(UiTheme.Muted("미지정 시트끼리 또는 같은 DWG 레이어 템플릿끼리 세트로 묶을 수 있습니다. 세트의 템플릿 변경은 내부 시트 전체에 적용됩니다.")); root.Controls.Add(title);
         var toolbar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 10) };
         _name = new TextBox { Width = 180, PlaceholderText = "새 세트 이름", Margin = new Padding(0, 6, 8, 0) }; toolbar.Controls.Add(_name);
         var create = UiTheme.PrimaryButton("+ 선택 시트 세트"); create.Click += (_, _) => Act(() => _editor.Combine(_name.Text));
@@ -39,7 +39,7 @@ public sealed class SheetGroupManagerForm : Form
         toolbar.Controls.Add(create); toolbar.Controls.Add(release); root.Controls.Add(toolbar);
         _cards = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         _cards.ClientSizeChanged += (_, _) => ResizeCards(); root.Controls.Add(_cards);
-        _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 간격 단위는 확대 후 모형공간 mm입니다."); root.Controls.Add(_status);
+        _status = UiTheme.Muted("순서는 각 시트의 위/아래 버튼으로 변경합니다. 시트 배치 간격은 창Export 설정의 공통값을 사용합니다."); root.Controls.Add(_status);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 10, 0, 0) };
         var save = UiTheme.PrimaryButton("세트 저장"); save.Click += (_, _) => Save();
         var cancel = UiTheme.SecondaryButton("취소"); cancel.DialogResult = DialogResult.Cancel;
@@ -91,16 +91,13 @@ public sealed class SheetGroupManagerForm : Form
             template.SelectedItem = template.Items.Cast<LayerTemplateChoice>().FirstOrDefault(t => t.Id == set.TemplateId) ?? template.Items[0];
             template.SelectedIndexChanged += (_, _) =>
             {
-                set.TemplateId = (template.SelectedItem as LayerTemplateChoice)?.Id ?? string.Empty;
-                foreach (string id in set.SheetUniqueIds)
-                    if (set.TemplateId.Length == 0) _assignments.Remove(id); else _assignments[id] = set.TemplateId;
+                _editor.AssignTemplate(set.Id, (template.SelectedItem as LayerTemplateChoice)?.Id ?? string.Empty, _assignments);
                 BeginInvoke(Render);
             };
             header.Controls.Add(template);
             var direction = new ComboBox { Width = 104, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(14, 3, 3, 3) };
             direction.Items.AddRange(new object[] { "가로 일렬", "세로 일렬" }); direction.SelectedIndex = set.Direction == "Vertical" ? 1 : 0;
             direction.SelectedIndexChanged += (_, _) => set.Direction = direction.SelectedIndex == 1 ? "Vertical" : "Horizontal"; header.Controls.Add(direction);
-            header.Controls.Add(new Label { Text = $"간격 {set.MarginMm:N0} mm", AutoSize = true, Margin = new Padding(12, 7, 2, 0) });
             var members = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(0, 6, 0, 0) };
             for (int i = 0; i < set.SheetUniqueIds.Count; i++)
             {
@@ -134,7 +131,7 @@ public sealed class SheetGroupManagerForm : Form
     {
         foreach (Panel card in _cards.Controls.OfType<Panel>().Where(c => c.Tag is string))
             card.BackColor = _editor.SelectedIds.Contains((string)card.Tag!) ? Color.FromArgb(216, 234, 251) : Color.White;
-        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 간격 변경: 창Export 탭 → 설정";
+        _status.Text = $"선택 {_editor.SelectedIds.Count}개 · 전체 {_editor.Sets.Count}세트 · 순서는 ↑↓ 버튼으로 변경 · 공통 간격: 창Export 탭 → 설정";
     }
     private void ResizeCards()
     { foreach (Control card in _cards.Controls) card.Width = Math.Max(780, _cards.ClientSize.Width - 28); }

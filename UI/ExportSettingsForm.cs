@@ -12,7 +12,6 @@ public sealed class ExportSetChoice
     public string Name => Set.Name;
     public int Count => Set.SheetUniqueIds.Count;
     public string Direction => Set.Direction == "Vertical" ? "세로 일렬" : "가로 일렬";
-    public double Margin => Set.MarginMm;
     public string Members { get; init; } = string.Empty;
     public string Template { get; init; } = string.Empty;
 }
@@ -21,6 +20,7 @@ public sealed class ExportSettingsForm : Form
 {
     private readonly IReadOnlyList<SheetDescriptor> _sheets;
     private readonly IReadOnlyList<LayerTemplateChoice> _templates;
+    private readonly double _sheetSpacingMm;
     private readonly Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>> _saveSets;
     private Dictionary<string, string> _assignments;
     private readonly DataGridView _grid;
@@ -32,13 +32,13 @@ public sealed class ExportSettingsForm : Form
         IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets)
         : this(sheets, sets, setups.Select((name, index) => new LayerTemplateChoice(name, name)).ToList(),
             sets.SelectMany(s => s.SheetUniqueIds.Select(id => (id, s.TemplateId))).Where(x => x.TemplateId.Length > 0).ToDictionary(x => x.id, x => x.TemplateId),
-            defaultFolder, (result, _) => saveSets(result)) { }
+            0, defaultFolder, (result, _) => saveSets(result)) { }
 
     public ExportSettingsForm(IReadOnlyList<SheetDescriptor> sheets, IReadOnlyList<SheetSetDefinition> sets,
         IReadOnlyList<LayerTemplateChoice> templates, IReadOnlyDictionary<string, string> assignments,
-        string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>> saveSets)
+        double sheetSpacingMm, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>> saveSets)
     {
-        _sheets = sheets; _templates = templates; _saveSets = saveSets;
+        _sheets = sheets; _templates = templates; _sheetSpacingMm = sheetSpacingMm; _saveSets = saveSets;
         _assignments = new Dictionary<string, string>(assignments, StringComparer.Ordinal);
         Text = "모형공간 DWG 출력"; ClientSize = new Size(1050, 700); MinimumSize = new Size(900, 590); UiTheme.Apply(this);
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), RowCount = 5, ColumnCount = 1 };
@@ -56,7 +56,7 @@ public sealed class ExportSettingsForm : Form
         var browse = UiTheme.SecondaryButton("찾아보기"); browse.Click += (_, _) => { using var picker = new FolderBrowserDialog { SelectedPath = OutputFolder }; if (picker.ShowDialog(this) == DialogResult.OK) _folder.Text = picker.SelectedPath; };
         var configure = UiTheme.SecondaryButton("시트·템플릿·세트 구성"); configure.Click += (_, _) => ConfigureSets();
         side.Controls.Add(browse); side.Controls.Add(configure); settings.Controls.Add(side, 2, 0); root.Controls.Add(settings);
-        var notice = UiTheme.Muted("DWG 2010 · 모형공간 mm · 시트별 축척 적용 · 전역폭·간격 변경: 창Export 탭 → 설정\n원근·음영 뷰는 생략하며 이미지는 사각형으로 대체합니다.");
+        var notice = UiTheme.Muted($"DWG 2010 · 모형공간 mm · 시트별 축척 적용 · 전체 세트 공통 간격 {_sheetSpacingMm:N0} mm · 전역폭·간격 변경: 창Export 탭 → 설정\n원근·음영 뷰는 생략하며 이미지는 사각형으로 대체합니다.");
         notice.MaximumSize = new Size(980, 0); notice.Margin = new Padding(0, 0, 0, 12); root.Controls.Add(notice);
         _grid = UiTheme.Grid(); _grid.AutoGenerateColumns = false;
         _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(ExportSetChoice.Selected), HeaderText = "출력", FillWeight = 40 });
@@ -64,7 +64,6 @@ public sealed class ExportSettingsForm : Form
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ExportSetChoice.Template), HeaderText = "DWG 레이어 템플릿", ReadOnly = true, FillWeight = 100 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ExportSetChoice.Count), HeaderText = "시트 수", ReadOnly = true, FillWeight = 45 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ExportSetChoice.Direction), HeaderText = "배치 방향", ReadOnly = true, FillWeight = 65 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ExportSetChoice.Margin), HeaderText = "간격 mm", ReadOnly = true, FillWeight = 60 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(ExportSetChoice.Members), HeaderText = "시트 순서", ReadOnly = true, FillWeight = 185 }); root.Controls.Add(_grid);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 12, 0, 0) };
         var run = UiTheme.PrimaryButton("모형공간 DWG 출력"); run.Click += (_, _) => Execute();

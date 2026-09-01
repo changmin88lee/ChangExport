@@ -6,20 +6,16 @@ namespace ChangExport.UI;
 
 public sealed class ChangExportSettingsForm : Form
 {
-    private readonly List<SheetSetDefinition> _sets;
     private readonly TextBox _keyword;
-    private readonly ComboBox _set;
     private readonly NumericUpDown _spacing;
-    private readonly Label _setDescription;
-    private readonly Action<string, IReadOnlyList<SheetSetDefinition>> _save;
-    private bool _selecting;
+    private readonly Action<string, double> _save;
     public string WideLineKeyword => _keyword.Text.Trim();
-    public IReadOnlyList<SheetSetDefinition> ResultSets => _sets.Select(s => s.Copy()).ToList();
+    public double SheetSpacingMm => (double)_spacing.Value;
 
-    public ChangExportSettingsForm(string projectName, string keyword, IEnumerable<SheetSetDefinition> sets,
-        Action<string, IReadOnlyList<SheetSetDefinition>> save)
+    public ChangExportSettingsForm(string projectName, string keyword, double sheetSpacingMm,
+        Action<string, double> save)
     {
-        _sets = sets.Select(s => s.Copy()).ToList(); _save = save;
+        _save = save;
         UiTheme.Apply(this);
         Text = "창Export 설정"; ClientSize = new Size(700, 640); MinimumSize = new Size(640, 660);
         MaximizeBox = false;
@@ -43,26 +39,21 @@ public sealed class ChangExportSettingsForm : Form
         var lineHint = Hint("두께는 Revit 출력 선굵기와 시트 축척을 따릅니다. 빈 값이면 변환하지 않습니다.");
         lines.Controls.Add(lineHint, 0, 3); lines.SetColumnSpan(lineHint, 2); root.Controls.Add(lines);
 
-        var placement = Section("시트 배치 간격", "가로·세로 모두 축척 적용 후 모형공간 mm 기준입니다.");
+        var placement = Section("시트 배치 간격", "모든 시트 세트에 공통으로 적용하며, 가로·세로 모두 축척 적용 후 모형공간 mm 기준입니다.");
         placement.Dock = DockStyle.Fill;
-        placement.Controls.Add(FieldLabel("대상 세트"), 0, 2);
-        _set = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList,
-            AccessibleName = "간격을 변경할 세트", Margin = new Padding(0, 4, 0, 4), DisplayMember = nameof(SheetSetDefinition.Name) };
-        foreach (var item in _sets) _set.Items.Add(item);
-        placement.Controls.Add(_set, 1, 2);
-        _setDescription = Hint(""); placement.Controls.Add(_setDescription, 1, 3);
-        placement.Controls.Add(FieldLabel("시트 사이 간격"), 0, 4);
+        placement.Controls.Add(FieldLabel("공통 간격"), 0, 2);
         var value = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
         _spacing = new NumericUpDown { Minimum = 0, Maximum = 100000, DecimalPlaces = 0, ThousandsSeparator = true,
-            Width = 130, AccessibleName = "선택한 세트 간격 mm", Margin = new Padding(0, 4, 8, 4) };
+            Width = 130, AccessibleName = "전체 시트 세트 공통 간격 mm", Margin = new Padding(0, 4, 8, 4),
+            Value = (decimal)Math.Clamp(sheetSpacingMm, 0, 100000) };
         value.Controls.Add(_spacing); value.Controls.Add(new Label { Text = "mm", AutoSize = true, Margin = new Padding(0, 7, 0, 0) });
-        placement.Controls.Add(value, 1, 4);
+        placement.Controls.Add(value, 1, 2);
         var gapHint = Hint("0 mm이면 시트 바깥 경계를 붙입니다. 도곽 안쪽 여백은 유지됩니다.");
-        placement.Controls.Add(gapHint, 0, 5); placement.SetColumnSpan(gapHint, 2);
-        var reset = new LinkLabel { Text = "모든 세트 간격을 0 mm로", AutoSize = true, LinkColor = UiTheme.Blue,
-            ActiveLinkColor = UiTheme.Navy, Margin = new Padding(0, 10, 0, 0), Enabled = _sets.Count > 0 };
-        reset.LinkClicked += (_, _) => { foreach (var item in _sets) item.MarginMm = 0; SelectSet(); };
-        placement.Controls.Add(reset, 0, 6); placement.SetColumnSpan(reset, 2); root.Controls.Add(placement);
+        placement.Controls.Add(gapHint, 0, 3); placement.SetColumnSpan(gapHint, 2);
+        var reset = new LinkLabel { Text = "공통 간격을 0 mm로", AutoSize = true, LinkColor = UiTheme.Blue,
+            ActiveLinkColor = UiTheme.Navy, Margin = new Padding(0, 10, 0, 0) };
+        reset.LinkClicked += (_, _) => _spacing.Value = 0;
+        placement.Controls.Add(reset, 0, 4); placement.SetColumnSpan(reset, 2); root.Controls.Add(placement);
 
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 20, 0, 0) };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -72,10 +63,6 @@ public sealed class ChangExportSettingsForm : Form
         var commit = UiTheme.PrimaryButton("설정 저장"); commit.Click += (_, _) => Save();
         actions.Controls.Add(cancel); actions.Controls.Add(commit); footer.Controls.Add(actions, 1, 0); root.Controls.Add(footer);
         AcceptButton = commit; CancelButton = cancel;
-        _set.SelectedIndexChanged += (_, _) => SelectSet();
-        _spacing.ValueChanged += (_, _) => { if (!_selecting && _set.SelectedItem is SheetSetDefinition item) item.MarginMm = (double)_spacing.Value; };
-        _set.Enabled = _sets.Count > 0;
-        if (_sets.Count > 0) _set.SelectedIndex = 0; else SelectSet();
     }
 
     private static TableLayoutPanel Section(string title, string description)
@@ -95,23 +82,10 @@ public sealed class ChangExportSettingsForm : Form
     private static Label Hint(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill,
         ForeColor = Color.FromArgb(95, 103, 115), Margin = new Padding(0, 5, 0, 0) };
 
-    private void SelectSet()
-    {
-        _selecting = true;
-        try
-        {
-            var item = _set.SelectedItem as SheetSetDefinition;
-            _spacing.Enabled = item != null; _spacing.Value = (decimal)Math.Clamp(item?.MarginMm ?? 0, 0, 100000);
-            _setDescription.Text = item == null ? "시트 세트 구성에서 세트를 먼저 만들어 주세요."
-                : $"{(item.Direction == "Vertical" ? "세로" : "가로")} 일렬 · {item.SheetUniqueIds.Count}장"
-                    + (item.SheetUniqueIds.Count < 2 ? " · 두 장 이상 묶으면 간격이 적용됩니다." : "");
-        }
-        finally { _selecting = false; }
-    }
     private void Save()
     {
         ValidateChildren();
-        try { _save(WideLineKeyword, ResultSets); DialogResult = DialogResult.OK; Close(); }
+        try { _save(WideLineKeyword, SheetSpacingMm); DialogResult = DialogResult.OK; Close(); }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "설정 저장 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
     }
 }

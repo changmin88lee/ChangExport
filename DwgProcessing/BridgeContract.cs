@@ -101,6 +101,7 @@ namespace ChangExport.DwgProcessing
         public int PreservedFillColors { get; set; }
         public int PreservedMaskingEntities { get; set; }
         public int MaterialBoundaryDuplicatesRemoved { get; set; }
+        public int FilterContainerMarkersIgnored { get; set; }
         public int FilterLowerGraphicsSkipped { get; set; }
         public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }

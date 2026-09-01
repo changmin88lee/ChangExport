@@ -132,7 +132,7 @@ public sealed class RevitDwgExportService
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
                             conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors,
                             conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.MaterialBoundaryDuplicatesRemoved,
-                            conversion.FilterLowerGraphicsSkipped, conversion.ExcludedEntities,
+                            conversion.FilterContainerMarkersIgnored, conversion.FilterLowerGraphicsSkipped, conversion.ExcludedEntities,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
                             conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
                             conversion.FamilySignaturesComputed, conversion.FamilySignaturesSkipped, conversion.FamilySignatureCacheHits,
@@ -145,7 +145,7 @@ public sealed class RevitDwgExportService
                     stage = "세트 모형공간 배치";
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
                     var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
-                        Direction = set.Direction, MarginMm = set.MarginMm, RevitSheet = true, UseLayerColors = true,
+                        Direction = set.Direction, MarginMm = configuration.SheetSpacingMm, RevitSheet = true, UseLayerColors = true,
                         LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines,
                         ExcludedLayers = excludedLayers },
                         prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
@@ -183,7 +183,8 @@ public sealed class RevitDwgExportService
                 customFiltersRequested = runtimes.Values.Sum(r => r.Layers.Count(row => row.IsCustom)), materialFiltersRequested = runtimes.Values.Sum(r => r.MaterialRules.Count),
                 customFilterMethod = "Independent temporary sheet/view copies; compound wall/floor exact material and type-name filters; color marker remap and transaction-group rollback; lower/beyond graphics excluded",
                 materialRules = allMaterialRules,
-                requestedSets = sets, layerEdits = allLayers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
+                sheetSpacingMm = configuration.SheetSpacingMm, requestedSets = sets,
+                layerEdits = allLayers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
             }, new JsonSerializerOptions { WriteIndented = true }));
             foreach (var runtime in runtimes.Values) runtime.Options.Dispose();
         }

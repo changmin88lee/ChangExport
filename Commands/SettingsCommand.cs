@@ -16,11 +16,10 @@ public sealed class SettingsCommand : IExternalCommand
             var document = commandData.Application.ActiveUIDocument?.Document;
             if (document == null) { TaskDialog.Show("창Export 설정", "설정을 저장할 Revit 프로젝트를 열어 주세요."); return Result.Cancelled; }
             var store = ExportConfigurationStore.ForDocument(document); var config = store.Load();
-            var sheets = SheetSetService.ReadSheets(document);
             using var form = new ChangExportSettingsForm(document.Title, config.WideLineKeyword,
-                SheetSetService.ReadSets(document, config, sheets), (keyword, sets) =>
+                config.SheetSpacingMm, (keyword, spacing) =>
                 {
-                    config.WideLineKeyword = keyword; config.SheetSets = sets.Select(s => s.Copy()).ToList();
+                    config.WideLineKeyword = keyword; config.SheetSpacingMm = spacing;
                     store.Save(config);
                 });
             return form.ShowDialog() == System.Windows.Forms.DialogResult.OK ? Result.Succeeded : Result.Cancelled;

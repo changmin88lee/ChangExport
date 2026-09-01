@@ -2,12 +2,13 @@ namespace ChangExport.Models;
 
 public sealed class RevitExportConfiguration
 {
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
     public string SelectedSetup { get; set; } = string.Empty;
     public List<ExportSetupEdits> Setups { get; set; } = new();
     // Old Revit setup edits remain in Setups for preservation; they are not auto-imported.
     public string SelectedOutputSetup { get; set; } = string.Empty;
     public string WideLineKeyword { get; set; } = "##";
+    public double SheetSpacingMm { get; set; }
     public List<ExportSetupEdits> OutputSetups { get; set; } = new() { new() };
     public List<SheetSetDefinition> SheetSets { get; set; } = new();
     public Dictionary<string, string> SheetTemplateIds { get; set; } = new();
@@ -105,6 +106,7 @@ public sealed class SheetSetDefinition
     public string TemplateId { get; set; } = string.Empty;
     public List<string> SheetUniqueIds { get; set; } = new();
     public string Direction { get; set; } = "Horizontal";
+    // Schema 4 compatibility only. Active output uses RevitExportConfiguration.SheetSpacingMm.
     public double MarginMm { get; set; } = 0;
     public SheetSetDefinition Copy() => new()
     {

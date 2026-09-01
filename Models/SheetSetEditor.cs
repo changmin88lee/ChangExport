@@ -27,17 +27,23 @@ public sealed class SheetSetEditor
         var selected = Sets.Where(s => SelectedIds.Contains(s.Id)).ToList();
         if (selected.Count < 2) throw new InvalidOperationException("시트 또는 세트를 두 개 이상 선택하세요.");
         if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("세트 이름을 입력하세요.");
-        if (selected.Any(s => string.IsNullOrWhiteSpace(s.TemplateId)))
-            throw new InvalidOperationException("DWG 레이어 템플릿이 지정되지 않은 시트 또는 세트가 있습니다.");
         if (selected.Select(s => s.TemplateId).Distinct(StringComparer.Ordinal).Count() != 1)
             throw new InvalidOperationException("같은 DWG 레이어 템플릿을 사용하는 시트와 세트만 묶을 수 있습니다.");
         int index = Sets.IndexOf(selected[0]);
         var combined = new SheetSetDefinition { Name = name.Trim(), TemplateId = selected[0].TemplateId,
-            Direction = selected[0].Direction, MarginMm = selected[0].MarginMm,
+            Direction = selected[0].Direction,
             SheetUniqueIds = selected.SelectMany(s => s.SheetUniqueIds).ToList() };
         if (combined.SheetUniqueIds.Distinct().Count() != combined.SheetUniqueIds.Count) throw new InvalidOperationException("중복 시트가 있습니다.");
         Sets.RemoveAll(s => SelectedIds.Contains(s.Id)); Sets.Insert(index, combined);
         SelectedIds.Clear(); SelectedIds.Add(combined.Id); _anchor = combined.Id;
+    }
+
+    public void AssignTemplate(string setId, string templateId, IDictionary<string, string> assignments)
+    {
+        var set = Sets.Single(s => s.Id == setId);
+        set.TemplateId = templateId ?? string.Empty;
+        foreach (string id in set.SheetUniqueIds)
+            if (set.TemplateId.Length == 0) assignments.Remove(id); else assignments[id] = set.TemplateId;
     }
 
     public void Release(IReadOnlyDictionary<string, SheetDescriptor> sheets)
@@ -49,7 +55,7 @@ public sealed class SheetSetEditor
         foreach (string id in previous.SheetUniqueIds)
         {
             var single = new SheetSetDefinition { Name = sheets.TryGetValue(id, out var sheet) ? sheet.Number : "없는 시트",
-                TemplateId = previous.TemplateId, SheetUniqueIds = new() { id }, Direction = previous.Direction, MarginMm = previous.MarginMm };
+                TemplateId = previous.TemplateId, SheetUniqueIds = new() { id }, Direction = previous.Direction };
             Sets.Insert(index++, single); SelectedIds.Add(single.Id);
         }
         _anchor = null;
