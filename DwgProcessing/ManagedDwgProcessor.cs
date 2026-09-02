@@ -73,7 +73,8 @@ public sealed partial class ManagedDwgProcessor
         response.TimingsMs["flattenAndLayers"] = phase.Elapsed.TotalMilliseconds; phase.Restart();
         if (request.RevitSheet) document = EditableModel(document, response, Check, geometry: geometry);
         ApplyLayerStyles(document, request.LayerStyles.Concat(referenceLayers.SelectMany(pair => request.LayerStyles
-            .Where(s => s.Layer == pair.Value).Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
+            .Where(s => RevitDwgLayerNames.Equivalent(s.Layer, pair.Value))
+            .Select(s => new LayerAppearance { Layer = pair.Key, Color = s.Color, Linetype = s.Linetype, Lineweight = s.Lineweight }))));
         // Marker colors must be consumed by ApplyCustomRemaps before removing overrides.
         if (request.UseLayerColors) NormalizeLayerColors(document, response, Check, geometry);
         DeduplicateFamilies(document, response, geometry);
@@ -522,9 +523,13 @@ public sealed partial class ManagedDwgProcessor
 
     private static void ApplyLayerStyles(CadDocument target, IEnumerable<LayerAppearance> styles)
     {
+        var aliases = target.Layers.GroupBy(layer => RevitDwgLayerNames.Normalize(layer.Name), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1).ToDictionary(group => group.Key, group => group.Single(), StringComparer.OrdinalIgnoreCase);
         foreach (LayerAppearance edit in styles)
         {
-            if (!target!.Layers.TryGetValue(edit.Layer, out Layer layer)) continue;
+            if (!target!.Layers.TryGetValue(edit.Layer, out Layer? layer)
+                && !aliases.TryGetValue(RevitDwgLayerNames.Normalize(edit.Layer), out layer)) continue;
+            if (layer == null) continue;
             if (edit.Color.HasValue)
             {
                 if (edit.Color.Value is < 1 or > 255) throw new InvalidDataException("잘못된 레이어 색상입니다.");

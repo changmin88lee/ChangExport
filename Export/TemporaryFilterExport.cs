@@ -13,7 +13,7 @@ internal static class TemporaryFilterExport
     {
         public string Drawing { get; set; } = "";
         public List<ColorLayerRemap> Remaps { get; } = new();
-        public List<MaterialAppearanceRemap> MaterialAppearanceRemaps { get; } = new();
+        public int LinkedMaterialPartSources { get; set; }
         public Dictionary<string, string> TextReplacements { get; } = new();
         public Dictionary<string, int> MatchedElements { get; } = new();
     }
@@ -27,8 +27,11 @@ internal static class TemporaryFilterExport
             throw new InvalidOperationException("출력 옵션이 객체 재지정을 제외하여 필터를 반영할 수 없습니다. 기본 도면 표현은 유지했습니다.");
         var rules = rows.Where(r => r.IsCustom).ToList();
         var ruleIndex = new TypeRuleIndex(rules);
-        var typeNames = new Dictionary<ElementId, string>();
+        var typeNames = new Dictionary<(Document Owner, ElementId TypeId), string>();
         var materialIndex = new Dictionary<ElementId, MaterialLayerRule>();
+        var materialRulesByName = materialRules.GroupBy(rule => rule.MaterialName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var linkedMaterialIndexes = new Dictionary<Document, Dictionary<ElementId, MaterialLayerRule>>();
         foreach (var rule in materialRules)
         {
             if (string.IsNullOrWhiteSpace(rule.MaterialUniqueId))
@@ -65,8 +68,6 @@ internal static class TemporaryFilterExport
         }
         foreach (var rule in rules) Register("type:" + rule.RuleId, rule.Layer, rule.Color, rule.CutLayer, rule.CutColor, rule.RuleId, false, 0);
         foreach (var rule in materialRules) result.MatchedElements.TryAdd(rule.RuleId, 0);
-        result.MaterialAppearanceRemaps.AddRange(LinkedModelFilterSupport.BuildMaterialRemaps(
-            document, materialRules, result.MatchedElements, warnings));
         static int FunctionPriority(int value) => (MaterialFunctionAssignment)value switch
         {
             MaterialFunctionAssignment.Finish1 => 700,
@@ -77,30 +78,40 @@ internal static class TemporaryFilterExport
             MaterialFunctionAssignment.Membrane => 200,
             _ => 100
         };
-        IReadOnlyCollection<ElementId> CompoundMaterials(Element element)
+        Dictionary<ElementId, MaterialLayerRule> MaterialIndex(Document owner)
         {
-            if (document.GetElement(element.GetTypeId()) is not HostObjAttributes type
+            if (ReferenceEquals(owner, document)) return materialIndex;
+            if (linkedMaterialIndexes.TryGetValue(owner, out var existing)) return existing;
+            var index = new Dictionary<ElementId, MaterialLayerRule>();
+            foreach (Material material in new FilteredElementCollector(owner).OfClass(typeof(Material)).Cast<Material>())
+                if (materialRulesByName.TryGetValue(material.Name, out MaterialLayerRule? rule)) index[material.Id] = rule;
+            linkedMaterialIndexes[owner] = index;
+            return index;
+        }
+        IReadOnlyCollection<ElementId> CompoundMaterials(Document owner, Element element)
+        {
+            if (owner.GetElement(element.GetTypeId()) is not HostObjAttributes type
                 || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure) return Array.Empty<ElementId>();
             return structure.GetLayers().Select(layer => layer.MaterialId)
                 .Where(id => id != ElementId.InvalidElementId).Distinct().ToList();
         }
-        RevitLayerRow? TypeRule(Element element)
+        RevitLayerRow? TypeRule(Document owner, Element element)
         {
             if (element.Category == null || !ruleIndex.HasCategory(element.Category.Name)) return null;
             ElementId typeId = element.GetTypeId();
-            if (!typeNames.TryGetValue(typeId, out string? typeName)) typeNames[typeId] = typeName = document.GetElement(typeId)?.Name ?? "";
+            var key = (owner, typeId);
+            if (!typeNames.TryGetValue(key, out string? typeName)) typeNames[key] = typeName = owner.GetElement(typeId)?.Name ?? "";
             return ruleIndex.Match(element.Category.Name, typeName);
         }
-        bool IsLayeredWallOrFloor(Element element)
+        static bool IsLayeredWallOrFloor(Document owner, Element element)
         {
             if (element.Category?.Id.Value is not ((long)BuiltInCategory.OST_Walls or (long)BuiltInCategory.OST_Floors)) return false;
-            return document.GetElement(element.GetTypeId()) is HostObjAttributes type
+            return owner.GetElement(element.GetTypeId()) is HostObjAttributes type
                 && type.GetCompoundStructure() is { LayerCount: >= 2 };
         }
-        static ElementId PartSource(Part part)
+        static LinkElementId? PartSource(Part part)
         {
-            var sourceId = part.GetSourceElementIds().FirstOrDefault();
-            return sourceId?.HostElementId ?? ElementId.InvalidElementId;
+            return part.GetSourceElementIds().FirstOrDefault();
         }
         bool HasVisibleWrapping(Element element)
         {
@@ -132,7 +143,7 @@ internal static class TemporaryFilterExport
                     match, false, 1);
                 return (marker.Projection, marker.Cut, match);
             }
-            RevitLayerRow? row = TypeRule(element) ?? rows.FirstOrDefault(candidate => !candidate.IsCustom
+            RevitLayerRow? row = TypeRule(document, element) ?? rows.FirstOrDefault(candidate => !candidate.IsCustom
                 && candidate.CategoryId == element.Category?.Id.Value && candidate.SubcategoryId == null && candidate.SpecialType == -1)
                 ?? rows.FirstOrDefault(candidate => !candidate.IsCustom && candidate.Category == element.Category?.Name
                     && candidate.Subcategory.Length == 0 && candidate.SpecialType == -1);
@@ -192,15 +203,18 @@ internal static class TemporaryFilterExport
                 LinkedModelFilterSupport.ApplyTypeFilters(document, usableViews, rules,
                     rule => markers["type:" + rule.RuleId], temporaryIds, result.MatchedElements, warnings);
                 var partSources = new HashSet<ElementId>();
+                var linkedPartSources = new Dictionary<(long LinkInstance, long LinkedElement), LinkElementId>();
                 var viewsWithMaterialParts = new HashSet<ElementId>();
                 var sourcesByView = new Dictionary<ElementId, HashSet<ElementId>>();
                 var wrappingByView = new Dictionary<ElementId, HashSet<ElementId>>();
+                var linkedSourceViews = new Dictionary<(long LinkInstance, long LinkedElement), HashSet<ElementId>>();
+                var linkedCandidates = new Dictionary<Document, List<Element>>();
                 if (materialIndex.Count > 0)
                 foreach (View view in usableViews)
                 foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
                 {
-                    if (element is ImportInstance or Part || !IsLayeredWallOrFloor(element)) continue;
-                    var ids = CompoundMaterials(element);
+                    if (element is ImportInstance or Part || !IsLayeredWallOrFloor(document, element)) continue;
+                    var ids = CompoundMaterials(document, element);
                     if (!ids.Any(materialIndex.ContainsKey)) continue;
                     sourcesByView.TryAdd(view.Id, new()); sourcesByView[view.Id].Add(element.Id);
                     if (HasVisibleWrapping(element))
@@ -220,6 +234,42 @@ internal static class TemporaryFilterExport
                     }
                     catch (Autodesk.Revit.Exceptions.ArgumentException) { }
                 }
+                if (materialRules.Count > 0)
+                foreach (View view in usableViews.Where(candidate => candidate is not ViewSheet))
+                foreach (RevitLinkInstance link in new FilteredElementCollector(document, view.Id)
+                    .OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
+                {
+                    try
+                    {
+                        Document? linked = link.GetLinkDocument();
+                        if (linked == null) continue;
+                        Dictionary<ElementId, MaterialLayerRule> index = MaterialIndex(linked);
+                        if (index.Count == 0) continue;
+                        if (!linkedCandidates.TryGetValue(linked, out List<Element>? candidates))
+                        {
+                            candidates = new FilteredElementCollector(linked).WhereElementIsNotElementType()
+                                .Where(element => IsLayeredWallOrFloor(linked, element)
+                                    && CompoundMaterials(linked, element).Any(index.ContainsKey)).ToList();
+                            linkedCandidates[linked] = candidates;
+                        }
+                        foreach (Element element in candidates)
+                        {
+                            var sourceId = new LinkElementId(link.Id, element.Id);
+                            var sourceKey = (link.Id.Value, element.Id.Value);
+                            linkedSourceViews.TryAdd(sourceKey, new()); linkedSourceViews[sourceKey].Add(view.Id);
+                            if (PartUtils.HasAssociatedParts(document, sourceId))
+                            {
+                                viewsWithMaterialParts.Add(view.Id);
+                                continue;
+                            }
+                            if (PartUtils.IsValidForCreateParts(document, sourceId)) linkedPartSources.TryAdd(sourceKey, sourceId);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add($"링크 재료 Part 제외: '{link.Name}'의 재료 ID를 임시 Part로 준비하지 못했습니다. · {ex.Message}");
+                    }
+                }
                 if (partSources.Count > 0)
                 {
                     PartUtils.CreateParts(document, partSources);
@@ -227,6 +277,32 @@ internal static class TemporaryFilterExport
                     foreach (ElementId sourceId in partSources)
                         temporaryIds.AddRange(PartUtils.GetAssociatedParts(document, sourceId, false, true));
                 }
+                int createdLinkedSources = 0;
+                foreach (var linkGroup in linkedPartSources.Values.GroupBy(sourceId => sourceId.LinkInstanceId.Value))
+                {
+                    var sourceIds = linkGroup.ToList();
+                    try
+                    {
+                        PartUtils.CreateParts(document, sourceIds);
+                        document.Regenerate();
+                        foreach (LinkElementId sourceId in sourceIds)
+                        {
+                            temporaryIds.AddRange(PartUtils.GetAssociatedParts(document, sourceId, false, true));
+                            var sourceKey = (sourceId.LinkInstanceId.Value, sourceId.LinkedElementId.Value);
+                            foreach (ElementId viewId in linkedSourceViews.GetValueOrDefault(sourceKey) ?? new())
+                                viewsWithMaterialParts.Add(viewId);
+                            createdLinkedSources++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        string label = document.GetElement(new ElementId(linkGroup.Key))?.Name ?? linkGroup.Key.ToString();
+                        warnings.Add($"링크 재료 Part 제외: '{label}'의 복합 벽·바닥 {sourceIds.Count:N0}개를 임시 Part로 만들지 못했습니다. · {ex.Message}");
+                    }
+                }
+                if (createdLinkedSources > 0)
+                    warnings.Add($"링크 재료 고유 식별: 링크 복합 벽·바닥 {createdLinkedSources:N0}개를 호스트 임시 Part로 만들고 재료 ID별 식별색을 적용했습니다.");
+                result.LinkedMaterialPartSources = createdLinkedSources;
                 foreach (View view in usableViews.Where(v => v is not ViewSheet && viewsWithMaterialParts.Contains(v.Id)))
                 {
                     var wrapped = wrappingByView.GetValueOrDefault(view.Id);
@@ -242,6 +318,7 @@ internal static class TemporaryFilterExport
                 {
                     if (element is ImportInstance || element.Category == null) continue;
                     MaterialLayerRule? materialRule = null; int priority = 100; Element sourceElement = element;
+                    Document sourceOwner = document;
                     bool suppressHostFills = false;
                     (Color Projection, Color Cut, string Match)? support = null;
                     if (element is not Part && wrappingByView.GetValueOrDefault(view.Id)?.Contains(element.Id) == true)
@@ -251,12 +328,29 @@ internal static class TemporaryFilterExport
                     }
                     if (element is Part part)
                     {
-                        ElementId sourceId = PartSource(part);
-                        if (sourceId != ElementId.InvalidElementId && document.GetElement(sourceId) is { } original) sourceElement = original;
-                        if (IsLayeredWallOrFloor(sourceElement))
+                        LinkElementId? sourceId = PartSource(part);
+                        if (sourceId?.HostElementId is { } hostId && hostId != ElementId.InvalidElementId
+                            && document.GetElement(hostId) is { } hostOriginal)
+                            sourceElement = hostOriginal;
+                        else if (sourceId?.LinkInstanceId is { } linkId && linkId != ElementId.InvalidElementId
+                            && sourceId.LinkedElementId != ElementId.InvalidElementId
+                            && document.GetElement(linkId) is RevitLinkInstance link
+                            && link.GetLinkDocument() is { } linked
+                            && linked.GetElement(sourceId.LinkedElementId) is { } linkedOriginal)
                         {
-                            ElementId materialId = part.get_Parameter(BuiltInParameter.DPART_MATERIAL_ID_PARAM)?.AsElementId() ?? ElementId.InvalidElementId;
-                            materialIndex.TryGetValue(materialId, out materialRule);
+                            sourceOwner = linked; sourceElement = linkedOriginal;
+                        }
+                        if (IsLayeredWallOrFloor(sourceOwner, sourceElement))
+                        {
+                            Parameter? materialParameter = part.get_Parameter(BuiltInParameter.DPART_MATERIAL_ID_PARAM);
+                            ElementId materialId = materialParameter?.AsElementId() ?? ElementId.InvalidElementId;
+                            if (!MaterialIndex(sourceOwner).TryGetValue(materialId, out materialRule))
+                            {
+                                string materialName = (sourceOwner.GetElement(materialId) as Material)?.Name
+                                    ?? (document.GetElement(materialId) as Material)?.Name
+                                    ?? materialParameter?.AsValueString() ?? "";
+                                materialRulesByName.TryGetValue(materialName, out materialRule);
+                            }
                             priority = FunctionPriority(part.get_Parameter(BuiltInParameter.DPART_LAYER_FUNCTION)?.AsInteger() ?? 0);
                         }
                     }
@@ -273,7 +367,7 @@ internal static class TemporaryFilterExport
                             materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
                         matchedRule = materialRule.RuleId;
                     }
-                    else if (TypeRule(sourceElement) is { } typeRule)
+                    else if (TypeRule(sourceOwner, sourceElement) is { } typeRule)
                     {
                         marker = markers["type:" + typeRule.RuleId]; matchedRule = typeRule.RuleId;
                     }

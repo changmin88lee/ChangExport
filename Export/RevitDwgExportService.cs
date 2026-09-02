@@ -156,12 +156,11 @@ public sealed class RevitDwgExportService
                                 var filtered = TemporaryFilterExport.Export(sourceDocument, sheet, options, layers, materialRules, nativeDirectory,
                                     Path.Combine(setFolder, $"filtered_{sheetIndex + 1:000}"), item.Warnings, cancel);
                                 input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList();
-                                request.MaterialAppearanceRemaps = filtered.MaterialAppearanceRemaps.ToList();
                                 request.TextReplacements = new(filtered.TextReplacements);
                                 item.TimingsMs[$"{sheetLabel}:filter"] = filterClock.Elapsed.TotalMilliseconds;
                                 request.ExpectedRuleMatches = new(filtered.MatchedElements);
                                 item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterMatches = filtered.MatchedElements,
-                                    filterRemaps = filtered.Remaps, linkedMaterialRemaps = filtered.MaterialAppearanceRemaps });
+                                    filterRemaps = filtered.Remaps, linkedMaterialPartSources = filtered.LinkedMaterialPartSources });
                             }
                             catch (OperationCanceledException) { throw; }
                             catch (TemporaryExportRestoreException) { throw; }
@@ -244,7 +243,7 @@ public sealed class RevitDwgExportService
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = false, originalSetupModified = false,
                 sheetSourcePolicy = "Host and loaded local/network Revit links, including nested loaded links; linked RVTs are filtered in disposable local copies and never modified",
                 customFiltersRequested = runtimes.Values.Sum(r => r.Layers.Count(row => row.IsCustom)), materialFiltersRequested = runtimes.Values.Sum(r => r.MaterialRules.Count),
-                customFilterMethod = "Independent temporary sheet/view copies; host compound wall/floor Parts; linked type-name filters propagated by host view filters; unambiguous linked material hatch/boundary signatures; color marker remap and transaction-group rollback; lower/beyond graphics excluded",
+                customFilterMethod = "Independent temporary sheet/view copies; host and linked compound wall/floor Parts; linked type-name filters propagated by host view filters; per-material unique color markers; transaction-group rollback; lower/beyond graphics excluded",
                 materialRules = allMaterialRules,
                 sheetSpacingMm = configuration.SheetSpacingMm, requestedSets = sets,
                 layerEdits = allLayers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items

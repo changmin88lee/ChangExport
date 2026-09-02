@@ -125,9 +125,24 @@ internal static class CustomLayerRegression
             && materialResponse.FilterLowerGraphicsSkipped == 1,
             "Beyond lower graphic is excluded from type/material remapping");
 
-        // Linked compound materials cannot become host Parts. Their unambiguous
-        // native hatch signature takes precedence over the linked type marker and
-        // moves the matching boundary while preserving the Revit fill appearance.
+        var rewrittenLayer = DwgRegression.Sheet(ACadVersion.AC1024);
+        var nativeSky = new Layer("선__04_하늘_") { Color = new ACadSharp.Color(0, 166, 0) };
+        rewrittenLayer.Layers.Add(nativeSky);
+        rewrittenLayer.Entities.Add(new Line { Layer = nativeSky, EndPoint = new XYZ(10, 0, 0) });
+        string rewrittenInput = Path.Combine(output, "revit-layer-name-source.dwg");
+        string rewrittenOutput = Path.Combine(output, "revit-layer-name-final.dwg");
+        DwgWriter.Write(rewrittenInput, rewrittenLayer);
+        new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", UseLayerColors = true,
+            OutputPath = rewrittenOutput,
+            LayerStyles = new() { new() { Layer = "선_#04(하늘)", Color = 7 } } }, rewrittenInput, output);
+        var rewrittenSaved = DwgReader.Read(rewrittenOutput);
+        check(rewrittenSaved.Layers["선__04_하늘_"].Color.Index == 7
+            && DwgRegression.Walk(rewrittenSaved.ModelSpace).Single(entity => entity.Layer.Name == "선__04_하늘_").Color.IsByLayer,
+            "Revit-rewritten # and parenthesis layer names receive the configured layer color");
+
+        // The detached DWG remapper still preserves fill appearance when a caller
+        // supplies an explicit appearance mapping. Revit link exports now use
+        // link-derived Parts and unique color markers instead of this fallback.
         var linked = DwgRegression.Sheet(ACadVersion.AC1024);
         var linkedBlock = new BlockRecord("LINKED_APARTMENT_MODEL");
         var linkedPattern = new HatchPattern("LINK_BRICK_75");

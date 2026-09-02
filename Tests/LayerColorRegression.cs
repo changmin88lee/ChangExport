@@ -59,7 +59,9 @@ internal static class LayerColorRegression
         var source = DwgRegression.Sheet(ACadVersion.AC1024);
         foreach (var entity in source.BlockRecords.SelectMany(b => b.Entities)) entity.Color = new Color(10);
         var invisibleLayer = new Layer(RevitLayerMappingService.InvisibleLineExportLayer); source.Layers.Add(invisibleLayer);
+        var revitRenamedLayer = new Layer("선__04_하늘_") { Color = new Color(0, 166, 0) }; source.Layers.Add(revitRenamedLayer);
         source.Entities.Add(new Line { Layer = invisibleLayer, StartPoint = new XYZ(1, 1, 0), EndPoint = new XYZ(9, 9, 0) });
+        source.Entities.Add(new Line { Layer = revitRenamedLayer, StartPoint = new XYZ(2, 2, 0), EndPoint = new XYZ(8, 8, 0) });
         var dim = source.Entities.OfType<Dimension>().Single();
         var changed = (DimensionStyle)dim.Style.Clone(); changed.TextColor = new Color(50); changed.DimensionLineColor = new Color(10);
         changed.ExtensionLineColor = new Color(8); changed.ArrowSize = 9; dim.SetDimensionOverride(changed);
@@ -69,7 +71,9 @@ internal static class LayerColorRegression
         string input = Path.Combine(output, "colors-source.dwg"), target = Path.Combine(output, "colors-filtered.dwg");
         DwgWriter.Write(input, source);
         var request = new BridgeRequest { Operation = "Flatten", UseLayerColors = true, OutputPath = target,
-            LayerStyles = source.Layers.Select(l => new LayerAppearance { Layer = l.Name, Color = 7 }).ToList(),
+            LayerStyles = source.Layers.Where(layer => layer != revitRenamedLayer)
+                .Select(layer => new LayerAppearance { Layer = layer.Name, Color = 7 })
+                .Append(new LayerAppearance { Layer = "선_#04(하늘)", Color = 7 }).ToList(),
             ExcludedLayers = new() { RevitLayerMappingService.InvisibleLineExportLayer },
             ColorRemaps = new() { new() { MarkerAci = 200, Layer = "CUSTOM-P", Color = 3, RuleId = "type" }, new() { MarkerAci = 201, Layer = "CUSTOM-C", Color = 5, RuleId = "type" } } };
         var response = new ManagedDwgProcessor().Run(request, input, output);
@@ -85,6 +89,9 @@ internal static class LayerColorRegression
         check(saved.Layers["CUSTOM-P"].Color.Index == 3 && saved.Layers["CUSTOM-C"].Color.Index == 5
             && all.OfType<Line>().Any(e => e.Layer.Name == "CUSTOM-P") && all.OfType<Line>().Any(e => e.Layer.Name == "CUSTOM-C"),
             "Projection and cut filter markers are resolved before normalization; custom colors are retained");
+        check(saved.Layers["선__04_하늘_"].Color.Index == 7
+            && all.OfType<Line>().Any(line => line.Layer.Name == "선__04_하늘_" && line.Color.IsByLayer),
+            "Revit-rewritten # and parenthesis layer names receive the configured style through canonical matching");
         check(all.OfType<MText>().Any(m => m.Value == @"{문자}\P\H2x;{색상}\P\\C10;literal"), "Inline indexed/true colors removed without changing font/height or escaped literal text");
         check(saved.DimensionStyles.All(s => s.TextColor.IsByLayer && s.DimensionLineColor.IsByLayer && s.ExtensionLineColor.IsByLayer), "Dimension style color overrides removed");
         // Isolate the new color pass from the SDK's existing Clone behavior (which
