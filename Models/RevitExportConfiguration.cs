@@ -82,7 +82,8 @@ public sealed class RevitLayerRow
     public int? OriginalColor { get; set; }
     public string? OriginalCutLayer { get; set; }
     public int? OriginalCutColor { get; set; }
-    public string Linetype { get; set; } = string.Empty;
+    private string _linetype = string.Empty;
+    public string Linetype { get => _linetype; set => _linetype = value ?? string.Empty; }
     public int? Lineweight { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public int LineweightChoice { get => Lineweight ?? -1; set => Lineweight = value < 0 ? null : value; }
@@ -90,7 +91,7 @@ public sealed class RevitLayerRow
     public string Caption => IsCustom ? "    └ 필터: 유형 이름 포함" : string.IsNullOrEmpty(Subcategory) ? Category : "    └ " + Subcategory;
     [System.Text.Json.Serialization.JsonIgnore]
     public bool HasChanges => IsCustom || Layer != OriginalLayer || Color != OriginalColor || CutLayer != OriginalCutLayer
-        || CutColor != OriginalCutColor || Linetype.Length > 0 || Lineweight.HasValue;
+        || CutColor != OriginalCutColor || !string.IsNullOrEmpty(Linetype) || Lineweight.HasValue;
     [System.Text.Json.Serialization.JsonIgnore]
     public string Key => (string.IsNullOrEmpty(ViewScope) ? "legacy" : ViewScope) + "\u001e" +
         (IsCustom ? "rule:" + RuleId : $"{Category}\u001f{Subcategory}\u001f{SpecialType}");

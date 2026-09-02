@@ -153,6 +153,9 @@ internal static class Program
         var row = new RevitLayerRow { Category = "구조 기둥", Layer = "S-COL", OriginalLayer = "S-COL", Color = 1, OriginalColor = 1,
             CutLayer = "S-COL-CUT", OriginalCutLayer = "S-COL-CUT", CutColor = 3, OriginalCutColor = 3 };
         Check(!row.HasChanges && RevitLayerMappingService.Validate(new[] { row }).Count == 0, "Unchanged source settings preserved");
+        row.Linetype = null!;
+        Check(row.Linetype == string.Empty && !row.HasChanges && RevitLayerMappingService.Validate(new[] { row }).Count == 0,
+            "Blank linetype input normalizes to the original-preserve value");
         row.Color = 256; Check(RevitLayerMappingService.Validate(new[] { row }).Count > 0, "Reject invalid ACI"); row.Color = 5;
         row.Linetype = "Continuous"; row.Lineweight = 25;
         var conflict = row.Copy(); conflict.Category = "다른 기둥"; conflict.Lineweight = 50;
@@ -170,7 +173,7 @@ internal static class Program
             Subcategory = i % 15 == 0 ? "" : "하위 항목 " + i, Layer = "S-COL-" + i, OriginalLayer = "S-COL-" + i,
             CutLayer = "S-CUT-" + i, OriginalCutLayer = "S-CUT-" + i, Color = i + 1, OriginalColor = i + 1, CutColor = 7, OriginalCutColor = 7 }).ToList();
         using (var layers = new LayerRuleManagerForm(store, new(), new[] { "", "프로젝트 출력 설정" }, _ => uiRows.Select(r => r.Copy()).ToList(),
-            new[] { new MaterialChoice("material-ui-1", 101, "콘크리트") }))
+            new[] { new MaterialChoice("material-ui-1", 101, "콘크리트") }, new[] { "파선", "점선" }))
         {
             Render(layers, Path.Combine(output, "layers.png"));
             layers.Show(); Application.DoEvents();
@@ -178,20 +181,26 @@ internal static class Program
             DataGridView materialGrid = Descendants(layers).OfType<DataGridView>().Single(g => g.Columns.Contains("Material"));
             Check(!grid.AllowUserToResizeColumns && !grid.AllowUserToResizeRows && !grid.AllowUserToOrderColumns, "Grid resize/reorder locked");
             Check(grid.RowCount == 3 && grid.Columns["Color"].ReadOnly, "Initially collapsed categories and click-only color");
+            var linetypeColumn = grid.Columns["Linetype"] as DataGridViewComboBoxColumn;
+            Check(linetypeColumn != null && linetypeColumn.Items.Cast<object>().Select(item => item.ToString()).SequenceEqual(
+                new[] { "원본 유지", "연속선 (Continuous)", "점선", "파선" }),
+                "Linetype is a project-scoped dropdown with explicit original-preserve and Continuous choices");
             Check(!Descendants(layers).OfType<TabControl>().Any()
                 && !Descendants(layers).OfType<ComboBox>().Any(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "천장평면도")),
                 "Material and category rules share one template screen without built-in view-type scopes");
             grid.CurrentCell = grid.Rows[0].Cells[0];
             typeof(LayerRuleManagerForm).GetMethod("AddRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             var custom = (RevitLayerRow)grid.CurrentRow!.DataBoundItem;
-            Check(custom.IsCustom && grid.RowCount == 18 && custom.Caption.StartsWith("    └"), "Adding a filter opens its category without expanding others");
-            grid.EndEdit(); custom.TypeNameContains = "RC"; custom.Layer = "S-RC"; custom.CutLayer = "S-RC-CUT";
+            Check(custom.IsCustom && custom.Linetype == string.Empty && grid.RowCount == 18 && custom.Caption.StartsWith("    └"),
+                "Adding a filter opens its category with the original-preserve linetype default");
+            grid.EndEdit(); custom.TypeNameContains = "RC"; custom.Layer = "S-RC"; custom.CutLayer = "S-RC-CUT"; custom.Linetype = null!;
             typeof(LayerRuleManagerForm).GetMethod("AddMaterialRule", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             Check(materialGrid.RowCount == 1 && ((MaterialLayerRule)materialGrid.Rows[0].DataBoundItem).MaterialUniqueId == "material-ui-1",
                 "Material section creates an exact Revit material rule");
             typeof(LayerRuleManagerForm).GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(layers, null);
             var savedSetup = store.Load().OutputSetups.First();
-            Check(savedSetup.Layers.Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC"), "Custom rules persist in ChangExport settings");
+            Check(savedSetup.Layers.Any(r => r.IsCustom && r.TypeNameContains == "RC" && r.Layer == "S-RC" && r.Linetype == string.Empty),
+                "Custom rules persist with blank linetype input normalized to original preserve");
             Check(savedSetup.Layers.Count == 46 && savedSetup.Layers.All(r => r.ViewScope.Length == 0),
                 "Saving preserves hidden rows in one scope-free DWG layer template");
             Check(savedSetup.MaterialRules.Single().MaterialUniqueId == "material-ui-1"

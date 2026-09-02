@@ -27,19 +27,28 @@ public sealed class LayerRuleManagerForm : Form
     private string SetupName => (_setup.SelectedItem as SetupItem)?.Name ?? string.Empty;
     private sealed record SetupItem(string Id, string Name) { public override string ToString() => Name.Length == 0 ? "기본값" : Name; }
     private sealed record WeightItem(int Value, string Label);
+    private sealed record LinetypeItem(string Value, string Label) { public override string ToString() => Label; }
 
     public LayerRuleManagerForm(ExportConfigurationStore store, RevitExportConfiguration configuration,
-        IReadOnlyList<string> setupNames, Func<string, List<RevitLayerRow>> read, IReadOnlyList<MaterialChoice>? materials = null)
+        IReadOnlyList<string> setupNames, Func<string, List<RevitLayerRow>> read, IReadOnlyList<MaterialChoice>? materials = null,
+        IReadOnlyList<string>? linetypes = null)
         : this(store, configuration, setupNames.Select(name => new LayerTemplateChoice(
             configuration.OutputSetups.FirstOrDefault(s => s.SetupName == name)?.SetupId ?? name, name)).ToList(),
-            id => read(configuration.OutputSetups.FirstOrDefault(s => s.SetupId == id)?.SetupName ?? id), materials) { }
+            id => read(configuration.OutputSetups.FirstOrDefault(s => s.SetupId == id)?.SetupName ?? id), materials, linetypes) { }
 
     public LayerRuleManagerForm(ExportConfigurationStore store, RevitExportConfiguration configuration,
-        IReadOnlyList<LayerTemplateChoice> templates, Func<string, List<RevitLayerRow>> read, IReadOnlyList<MaterialChoice>? materials = null)
+        IReadOnlyList<LayerTemplateChoice> templates, Func<string, List<RevitLayerRow>> read, IReadOnlyList<MaterialChoice>? materials = null,
+        IReadOnlyList<string>? linetypes = null)
     {
         _store = store; _configuration = configuration; _read = read;
         _materials = new() { new MaterialChoice(string.Empty, -1, "(현재 프로젝트에 재료 없음 / 미지정)") };
         _materials.AddRange(materials ?? Array.Empty<MaterialChoice>());
+        var availableLinetypes = (linetypes ?? Array.Empty<string>())
+            .Concat(configuration.OutputSetups.SelectMany(setup => setup.Layers).Select(row => row.Linetype))
+            .Where(value => !string.IsNullOrWhiteSpace(value) && !value.Equals("Continuous", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase).OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase);
+        var linetypeItems = new[] { new LinetypeItem(string.Empty, "원본 유지"), new LinetypeItem("Continuous", "연속선 (Continuous)") }
+            .Concat(availableLinetypes.Select(value => new LinetypeItem(value, value))).ToList();
         Text = "DWG 레이어 템플릿"; ClientSize = new Size(1500, 900); MinimumSize = new Size(1180, 720); UiTheme.Apply(this);
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), RowCount = 9, ColumnCount = 1 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -80,12 +89,15 @@ public sealed class LayerRuleManagerForm : Form
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Color", DataPropertyName = nameof(RevitLayerRow.Color), HeaderText = "투영 색상", ReadOnly = true, FillWeight = 70 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(RevitLayerRow.CutLayer), HeaderText = "절단 레이어", FillWeight = 105 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "CutColor", DataPropertyName = nameof(RevitLayerRow.CutColor), HeaderText = "절단 색상", ReadOnly = true, FillWeight = 70 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(RevitLayerRow.Linetype), HeaderText = "레이어 선종류", FillWeight = 80 });
+        _grid.Columns.Add(new DataGridViewComboBoxColumn { Name = "Linetype", DataPropertyName = nameof(RevitLayerRow.Linetype),
+            HeaderText = "레이어 선종류", FillWeight = 95, DataSource = linetypeItems, DisplayMember = nameof(LinetypeItem.Label),
+            ValueMember = nameof(LinetypeItem.Value), ValueType = typeof(string), FlatStyle = FlatStyle.Flat,
+            ToolTipText = "원본 유지가 기본입니다. Continuous 또는 현재 프로젝트의 Revit 선종류를 선택할 수 있습니다." });
         _grid.Columns.Add(new DataGridViewComboBoxColumn { DataPropertyName = nameof(RevitLayerRow.LineweightChoice), HeaderText = "선가중치 (mm)", FillWeight = 80, DataSource = new[] { new WeightItem(-1, "원본 유지") }.Concat(RevitLayerMappingService.ValidLineweights.Select(w => new WeightItem(w, (w / 100d).ToString("0.00")))).ToList(), DisplayMember = nameof(WeightItem.Label), ValueMember = nameof(WeightItem.Value), ValueType = typeof(int), FlatStyle = FlatStyle.Flat });
         _grid.CellPainting += PaintColor; _grid.CellClick += PickColor; _grid.CellContentClick += ToggleCategory;
         _grid.CellFormatting += (_, e) => { if (e.RowIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Expand") return; var row = (RevitLayerRow)_grid.Rows[e.RowIndex].DataBoundItem; e.Value = IsExpandableParent(row) ? (_expanded.Contains((TemplateId, _search.Text.Trim(), row.Category)) ? "−" : "+") : ""; e.FormattingApplied = true; };
         _grid.CellBeginEdit += (_, e) => { if (_grid.Columns[e.ColumnIndex].Name == "Contains" && !((RevitLayerRow)_grid.Rows[e.RowIndex].DataBoundItem).IsCustom) e.Cancel = true; }; root.Controls.Add(_grid);
-        _status = UiTheme.Muted("색상 칸을 클릭하여 선택합니다. 선종류를 비우면 원본 표현을 유지합니다."); _status.Margin = new Padding(0, 8, 0, 0); root.Controls.Add(_status);
+        _status = UiTheme.Muted("색상 칸을 클릭하여 선택합니다. 레이어 선종류의 기본값은 '원본 유지'입니다."); _status.Margin = new Padding(0, 8, 0, 0); root.Controls.Add(_status);
         _grid.DataError += (_, e) => { e.ThrowException = false; _status.Text = "입력값을 확인하세요."; };
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 8, 0, 0) };
         var save = UiTheme.PrimaryButton("템플릿 저장"); save.Click += (_, _) => Save(); var close = UiTheme.SecondaryButton("닫기"); close.Click += (_, _) => Close(); actions.Controls.Add(save); actions.Controls.Add(close); root.Controls.Add(actions);
@@ -122,7 +134,7 @@ public sealed class LayerRuleManagerForm : Form
     private void AddRule()
     {
         if (Selected is not { } selected || !_grid.EndEdit()) return; var rows = Rows(TemplateId); var parent = rows.FirstOrDefault(r => !r.IsCustom && r.Category == selected.Category && r.Subcategory.Length == 0) ?? selected;
-        var rule = parent.Copy(); rule.IsCustom = true; rule.RuleId = Guid.NewGuid().ToString("N"); rule.Subcategory = ""; rule.TypeNameContains = ""; rule.ViewScope = ""; rule.Color = rule.Color is >= 1 and <= 255 ? rule.Color : 7; rule.CutColor = rule.CutColor is >= 1 and <= 255 ? rule.CutColor : rule.Color; if (string.IsNullOrWhiteSpace(rule.CutLayer)) rule.CutLayer = rule.Layer;
+        var rule = parent.Copy(); rule.IsCustom = true; rule.RuleId = Guid.NewGuid().ToString("N"); rule.Subcategory = ""; rule.TypeNameContains = ""; rule.ViewScope = ""; rule.Linetype = ""; rule.Color = rule.Color is >= 1 and <= 255 ? rule.Color : 7; rule.CutColor = rule.CutColor is >= 1 and <= 255 ? rule.CutColor : rule.Color; if (string.IsNullOrWhiteSpace(rule.CutLayer)) rule.CutLayer = rule.Layer;
         int index = rows.FindLastIndex(r => r.Category == parent.Category && (r.IsCustom || r.Subcategory.Length == 0)); rows.Insert(index + 1, rule); _expanded.Add((TemplateId, "", parent.Category)); if (_search.Text.Length > 0) _search.Clear(); else LoadRows(); SelectRule(rule); _grid.CurrentCell = _grid.CurrentRow!.Cells["Contains"]; _grid.BeginEdit(true);
     }
     private void RemoveRule() { if (Selected is not { IsCustom: true } rule) { _status.Text = "삭제할 유형 이름 필터를 선택하세요."; return; } Rows(TemplateId).Remove(rule); LoadRows(); }

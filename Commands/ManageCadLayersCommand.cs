@@ -18,7 +18,8 @@ public sealed class ManageCadLayersCommand : IExternalCommand
             var configuration = store.Load();
             var mapping = new RevitLayerMappingService(document);
             using var form = new LayerRuleManagerForm(store, configuration, RevitLayerMappingService.TemplateChoices(configuration),
-                id => mapping.Read(id, configuration), RevitMaterialCatalog.Read(document));
+                id => mapping.Read(id, configuration), RevitMaterialCatalog.Read(document),
+                RevitLayerMappingService.ProjectLinetypes(document));
             form.ShowDialog();
             return Result.Succeeded;
         }

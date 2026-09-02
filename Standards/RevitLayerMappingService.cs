@@ -18,6 +18,10 @@ public sealed class RevitLayerMappingService
         .Concat(config.OutputSetups.Select(s => s.SetupName).Where(n => n.Length > 0)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     public static IReadOnlyList<LayerTemplateChoice> TemplateChoices(RevitExportConfiguration config) => config.OutputSetups
         .Select(s => new LayerTemplateChoice(s.SetupId, s.SetupName)).ToList();
+    public static IReadOnlyList<string> ProjectLinetypes(Document document) => new FilteredElementCollector(document)
+        .OfClass(typeof(LinePatternElement)).Cast<LinePatternElement>().Select(pattern => pattern.Name)
+        .Where(name => !string.IsNullOrWhiteSpace(name) && !name.Equals("Continuous", StringComparison.OrdinalIgnoreCase))
+        .Distinct(StringComparer.CurrentCultureIgnoreCase).OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase).ToList();
     public static ExportSetupEdits? FindTemplate(RevitExportConfiguration config, string idOrName) => config.OutputSetups
         .FirstOrDefault(s => s.SetupId == idOrName) ?? config.OutputSetups.FirstOrDefault(s => s.SetupName == idOrName);
 
@@ -134,7 +138,7 @@ public sealed class RevitLayerMappingService
             if (row.Lineweight.HasValue && !ValidLineweights.Contains(row.Lineweight.Value)) issues.Add($"{row.Category}: 지원하지 않는 선가중치입니다.");
             foreach (string layer in new[] { row.Layer, row.CutLayer }.Where(l => !string.IsNullOrEmpty(l)).Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                if (row.Linetype.Length == 0 && !row.Lineweight.HasValue) continue;
+                if (string.IsNullOrEmpty(row.Linetype) && !row.Lineweight.HasValue) continue;
                 var style = new LayerAppearance { Layer = layer, Linetype = row.Linetype, Lineweight = row.Lineweight };
                 if (appearances.TryGetValue(layer, out var previous) && (previous.Linetype != style.Linetype || previous.Lineweight != style.Lineweight))
                     issues.Add($"{layer}: 같은 DWG 레이어에 서로 다른 선종류/선가중치가 지정되었습니다.");
