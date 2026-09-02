@@ -132,6 +132,19 @@ public sealed partial class ManagedDwgProcessor
             response.Message = "내장 엔진 모형공간 변환 및 DWG 재열기 검사 완료";
             return response;
         }
+        catch (InvalidDataException ex)
+        {
+            string diagnostic = string.Empty;
+            if (File.Exists(temporary))
+            {
+                diagnostic = Path.Combine(workingDirectory, "diagnostic_failed_" + Path.GetFileName(temporary));
+                try { File.Move(temporary, diagnostic, false); }
+                catch { diagnostic = string.Empty; }
+            }
+            string message = ex.Message + (diagnostic.Length == 0 ? string.Empty
+                : Environment.NewLine + "실패한 재열기 진단 DWG: " + diagnostic);
+            throw new InvalidDataException(message, ex);
+        }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
@@ -530,6 +543,35 @@ public sealed partial class ManagedDwgProcessor
         }
     }
 
+    private static string DiagnosticNumber(double value) => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string HatchPatternDetails(Hatch hatch)
+    {
+        if (hatch.Pattern == null) return "없음";
+        if (hatch.Pattern.Lines.Count == 0) return $"{hatch.Pattern.Name}: 선 정의 없음";
+        return hatch.Pattern.Name + ": " + string.Join(" / ", hatch.Pattern.Lines.Select((line, index) =>
+            $"L{index + 1}[각도={DiagnosticNumber(line.Angle)}, 기준=({DiagnosticNumber(line.BasePoint.X)},{DiagnosticNumber(line.BasePoint.Y)}), "
+            + $"간격=({DiagnosticNumber(line.Offset.X)},{DiagnosticNumber(line.Offset.Y)}), 점선={string.Join(',', line.DashLengths.Select(DiagnosticNumber))}]"));
+    }
+
+    private static string HatchBoundaryDetails(Hatch hatch) => hatch.Paths.Count == 0 ? "없음" : string.Join(" / ",
+        hatch.Paths.Select((path, pathIndex) => $"P{pathIndex + 1}[{string.Join(',', path.Edges.Select((edge, edgeIndex) => $"E{edgeIndex + 1}:{edge.Type}"))}]"));
+
+    private static InvalidDataException RoundTripFailure(BlockRecord block, int index, Entity expected, Entity? actual,
+        string reason, IEnumerable<string>? details = null)
+    {
+        var lines = new List<string>
+        {
+            reason,
+            $"블록: {block.Name}",
+            $"객체 순번: {index + 1}",
+            $"예상 객체: {expected.ObjectName} · Handle {expected.Handle:X} · 레이어 {expected.Layer.Name}",
+            actual == null ? "저장 후 객체: 없음" : $"저장 후 객체: {actual.ObjectName} · Handle {actual.Handle:X} · 레이어 {actual.Layer.Name}"
+        };
+        if (details != null) lines.AddRange(details);
+        return new InvalidDataException(string.Join(Environment.NewLine, lines));
+    }
+
     private static void VerifyRoundTrip(CadDocument expected, CadDocument actual)
     {
         if (expected.Header.Version != actual.Header.Version || actual.Header.InsUnits != UnitsType.Millimeters || !actual.Header.ShowModelSpace)
@@ -540,23 +582,55 @@ public sealed partial class ManagedDwgProcessor
         {
             if (!actual.BlockRecords.TryGetValue(before.Name, out BlockRecord after)) throw new InvalidDataException("DWG 블록이 누락되었습니다: " + before.Name);
             var left = before.GetSortedEntities().ToArray(); var right = after.GetSortedEntities().ToArray();
-            if (left.Length != right.Length) throw new InvalidDataException("DWG 내부 객체 수가 달라졌습니다: " + before.Name);
+            if (left.Length != right.Length) throw new InvalidDataException($"DWG 내부 객체 수가 달라졌습니다.{Environment.NewLine}블록: {before.Name}{Environment.NewLine}예상: {left.Length:N0}{Environment.NewLine}저장 후: {right.Length:N0}");
             for (int n = 0; n < left.Length; n++)
             {
                 if (left[n].ObjectName != right[n].ObjectName || left[n].Layer.Name != right[n].Layer.Name)
-                    throw new InvalidDataException("DWG 객체 종류 또는 레이어가 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 객체 종류 또는 레이어가 달라졌습니다.");
                 if (!left[n].Color.Equals(right[n].Color) || left[n].LineWeight != right[n].LineWeight
                     || Math.Abs(left[n].LineTypeScale - right[n].LineTypeScale) > Epsilon)
-                    throw new InvalidDataException("DWG 객체의 색상·선가중치·선축척이 달라졌습니다.");
-                if (left[n] is Hatch beforeHatch && (right[n] is not Hatch afterHatch
-                    || beforeHatch.IsSolid != afterHatch.IsSolid || beforeHatch.Pattern?.Name != afterHatch.Pattern?.Name
-                    || Math.Abs(beforeHatch.PatternScale - afterHatch.PatternScale) > Epsilon
-                    || Math.Abs(Math.Sin(beforeHatch.PatternAngle) - Math.Sin(afterHatch.PatternAngle)) > Epsilon
-                    || Math.Abs(Math.Cos(beforeHatch.PatternAngle) - Math.Cos(afterHatch.PatternAngle)) > Epsilon
-                    || beforeHatch.Paths.Count != afterHatch.Paths.Count
-                    || beforeHatch.Paths.Where((path, pathIndex) => path.Edges.Count != afterHatch.Paths[pathIndex].Edges.Count
-                        || path.Edges.Where((edge, edgeIndex) => edge.Type != afterHatch.Paths[pathIndex].Edges[edgeIndex].Type).Any()).Any()))
-                    throw new InvalidDataException("DWG 해치의 패턴·각도·축척 또는 경계 형식이 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 객체의 색상·선가중치·선축척이 달라졌습니다.", new[]
+                    {
+                        $"예상: 색상={left[n].Color}, 선가중치={left[n].LineWeight}, 선축척={DiagnosticNumber(left[n].LineTypeScale)}",
+                        $"저장 후: 색상={right[n].Color}, 선가중치={right[n].LineWeight}, 선축척={DiagnosticNumber(right[n].LineTypeScale)}"
+                    });
+                if (left[n] is Hatch beforeHatch)
+                {
+                    if (right[n] is not Hatch afterHatch)
+                        throw RoundTripFailure(before, n, beforeHatch, right[n], "DWG 해치가 다른 객체 형식으로 저장되었습니다.");
+                    var differences = new List<string>();
+                    if (beforeHatch.IsSolid != afterHatch.IsSolid) differences.Add($"솔리드: {beforeHatch.IsSolid} → {afterHatch.IsSolid}");
+                    if (beforeHatch.Pattern?.Name != afterHatch.Pattern?.Name) differences.Add($"패턴 이름: {beforeHatch.Pattern?.Name ?? "없음"} → {afterHatch.Pattern?.Name ?? "없음"}");
+                    if (Math.Abs(beforeHatch.PatternScale - afterHatch.PatternScale) > Epsilon)
+                        differences.Add($"패턴 축척: {DiagnosticNumber(beforeHatch.PatternScale)} → {DiagnosticNumber(afterHatch.PatternScale)}");
+                    if (Math.Abs(Math.Sin(beforeHatch.PatternAngle) - Math.Sin(afterHatch.PatternAngle)) > Epsilon
+                        || Math.Abs(Math.Cos(beforeHatch.PatternAngle) - Math.Cos(afterHatch.PatternAngle)) > Epsilon)
+                        differences.Add($"패턴 각도(rad): {DiagnosticNumber(beforeHatch.PatternAngle)} → {DiagnosticNumber(afterHatch.PatternAngle)}");
+                    if (beforeHatch.Paths.Count != afterHatch.Paths.Count)
+                        differences.Add($"경계 경로 수: {beforeHatch.Paths.Count} → {afterHatch.Paths.Count}");
+                    int commonPaths = Math.Min(beforeHatch.Paths.Count, afterHatch.Paths.Count);
+                    for (int pathIndex = 0; pathIndex < commonPaths; pathIndex++)
+                    {
+                        var expectedPath = beforeHatch.Paths[pathIndex]; var actualPath = afterHatch.Paths[pathIndex];
+                        if (expectedPath.Edges.Count != actualPath.Edges.Count)
+                            differences.Add($"경계 P{pathIndex + 1} Edge 수: {expectedPath.Edges.Count} → {actualPath.Edges.Count}");
+                        int commonEdges = Math.Min(expectedPath.Edges.Count, actualPath.Edges.Count);
+                        for (int edgeIndex = 0; edgeIndex < commonEdges; edgeIndex++)
+                            if (expectedPath.Edges[edgeIndex].Type != actualPath.Edges[edgeIndex].Type)
+                                differences.Add($"경계 P{pathIndex + 1} E{edgeIndex + 1}: {expectedPath.Edges[edgeIndex].Type} → {actualPath.Edges[edgeIndex].Type}");
+                    }
+                    if (differences.Count > 0)
+                        throw RoundTripFailure(before, n, beforeHatch, afterHatch,
+                            "DWG 해치 재열기 검증에서 변경이 발견되었습니다.", differences.Concat(new[]
+                            {
+                                $"예상 해치: 유형={beforeHatch.PatternType}, 법선={beforeHatch.Normal}, 연관={beforeHatch.IsAssociative}",
+                                $"저장 후 해치: 유형={afterHatch.PatternType}, 법선={afterHatch.Normal}, 연관={afterHatch.IsAssociative}",
+                                "예상 패턴 정의: " + HatchPatternDetails(beforeHatch),
+                                "저장 후 패턴 정의: " + HatchPatternDetails(afterHatch),
+                                "예상 경계: " + HatchBoundaryDetails(beforeHatch),
+                                "저장 후 경계: " + HatchBoundaryDetails(afterHatch)
+                            }));
+                }
                 if (left[n] is Wipeout beforeMask && (right[n] is not Wipeout afterMask
                     || beforeMask.InsertPoint.DistanceFrom(afterMask.InsertPoint) > Epsilon
                     || beforeMask.UVector.DistanceFrom(afterMask.UVector) > Epsilon || beforeMask.VVector.DistanceFrom(afterMask.VVector) > Epsilon
@@ -567,25 +641,25 @@ public sealed partial class ManagedDwgProcessor
                     || beforeMask.ClipBoundaryVertices.Where((point, pointIndex) =>
                         Math.Abs(point.X - afterMask.ClipBoundaryVertices[pointIndex].X) > Epsilon
                         || Math.Abs(point.Y - afterMask.ClipBoundaryVertices[pointIndex].Y) > Epsilon).Any()))
-                    throw new InvalidDataException("DWG 마스킹 영역의 위치·크기·잘림 경계가 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 마스킹 영역의 위치·크기·잘림 경계가 달라졌습니다.");
                 if (left[n] is Polyline3D outline && (right[n] is not Polyline3D savedOutline
                     || outline.IsClosed != savedOutline.IsClosed || outline.Vertices.Count != savedOutline.Vertices.Count
                     || outline.Vertices.Zip(savedOutline.Vertices).Any(pair => pair.First.Location.DistanceFrom(pair.Second.Location) > Epsilon)))
-                    throw new InvalidDataException("DWG 사각형 경계의 좌표 또는 닫힘 상태가 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 사각형 경계의 좌표 또는 닫힘 상태가 달라졌습니다.");
                 if (left[n] is MText text && (right[n] is not MText savedText || text.Value != savedText.Value || text.Style.Filename != savedText.Style.Filename))
-                    throw new InvalidDataException("DWG 여러 줄 문자 또는 글꼴이 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 여러 줄 문자 또는 글꼴이 달라졌습니다.");
                 if (left[n] is TextEntity single && (right[n] is not TextEntity savedSingle || single.Value != savedSingle.Value || single.Style.Filename != savedSingle.Style.Filename))
-                    throw new InvalidDataException("DWG 문자 또는 글꼴이 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 문자 또는 글꼴이 달라졌습니다.");
                 if (left[n] is Insert beforeInsert && right[n] is Insert afterInsert
                     && (beforeInsert.InsertPoint.DistanceFrom(afterInsert.InsertPoint) > Epsilon
                         || Math.Abs(beforeInsert.XScale - afterInsert.XScale) > Epsilon || Math.Abs(beforeInsert.YScale - afterInsert.YScale) > Epsilon
                         || Math.Abs(Math.Sin(beforeInsert.Rotation) - Math.Sin(afterInsert.Rotation)) > Epsilon
                         || Math.Abs(Math.Cos(beforeInsert.Rotation) - Math.Cos(afterInsert.Rotation)) > Epsilon))
-                    throw new InvalidDataException("DWG 블록의 위치·축척·회전이 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 블록의 위치·축척·회전이 달라졌습니다.");
                 if (left[n] is Insert beforeAttributes && right[n] is Insert afterAttributes
                     && !beforeAttributes.Attributes.Select(a => (a.Tag, a.Value, a.Style.Filename)).SequenceEqual(
                         afterAttributes.Attributes.Select(a => (a.Tag, a.Value, a.Style.Filename))))
-                    throw new InvalidDataException("DWG 블록 속성 문자가 달라졌습니다.");
+                    throw RoundTripFailure(before, n, left[n], right[n], "DWG 블록 속성 문자가 달라졌습니다.");
                 if (left[n] is Insert a && a.SpatialFilter is { } clip)
                 {
                     if (right[n] is not Insert b || b.SpatialFilter is not { } saved || !saved.DisplayBoundary

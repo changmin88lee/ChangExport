@@ -230,8 +230,19 @@ internal static class Program
         var exportResult = new ExportRunResult { OutputFolder = output, WorkFolder = output, ManifestPath = "Manifest.json" };
         var warningItem = new ExportItemResult("구조 세트", "", true, "구조 세트.dwg");
         warningItem.Warnings.Add("시트 A101: 생략: 원근·음영 뷰포트. 다른 도면은 저장했습니다.");
-        warningItem.Warnings.Add("시트 A102: 대체: 이미지 '로고.png'를 사각형으로 표시했습니다."); exportResult.Items.Add(warningItem);
-        using (var resultForm = new ExportResultForm(exportResult)) Render(resultForm, Path.Combine(output, "result-warnings.png"));
+        warningItem.Warnings.Add("시트 A102: 대체: 이미지 '로고.png'를 사각형으로 표시했습니다.");
+        warningItem.ErrorDetails = "DWG 해치 재열기 검증에서 변경이 발견되었습니다.\n블록: CE_TEST\n패턴 축척: 1 → 300";
+        warningItem.SheetDiagnostics.Add(new { sheet = "A101", hatch = "FP1" });
+        warningItem.TimingsMs["verify"] = 12.5; exportResult.Items.Add(warningItem);
+        using (var resultForm = new ExportResultForm(exportResult))
+        {
+            Render(resultForm, Path.Combine(output, "result-warnings.png"));
+            Check(Descendants(resultForm).OfType<Button>().Any(button => button.Text == "진단 TXT 저장"), "Export result exposes diagnostic TXT save");
+        }
+        string diagnosticText = ExportDiagnosticText.Build(exportResult);
+        Check(diagnosticText.Contains("Beta 0.12.3") && diagnosticText.Contains("블록: CE_TEST")
+            && diagnosticText.Contains("패턴 축척: 1 → 300") && diagnosticText.Contains("\"hatch\": \"FP1\"")
+            && diagnosticText.Contains("verify: 12.500"), "Diagnostic TXT contains errors, sheet details and timings");
         Check(!File.Exists(Path.Combine(output, "unexpected.json")), "No UI execution side effects");
     }
     private static IEnumerable<Control> Descendants(Control control)

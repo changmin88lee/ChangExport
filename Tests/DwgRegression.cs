@@ -3,8 +3,10 @@ using ACadSharp.Entities;
 using ACadSharp.IO;
 using ACadSharp.Objects;
 using ACadSharp.Tables;
+using ACadSharp.Types.Units;
 using ChangExport.DwgProcessing;
 using CSMath;
+using System.Reflection;
 using CadColor = ACadSharp.Color;
 
 internal static class DwgRegression
@@ -125,6 +127,30 @@ internal static class DwgRegression
             "Same-name hatch definitions receive stable distinct names and retain their line spacing");
         check(hatchResult.Warnings.Any(warning => warning.Contains("해치 패턴 보존") && warning.Contains("FP1_COLLISION")),
             "Hatch-pattern isolation is reported in the export diagnostics");
+        CadDocument DiagnosticDocument(double scale)
+        {
+            var document = new CadDocument(ACadVersion.AC1024); document.Header.InsUnits = UnitsType.Millimeters;
+            var diagnosticHatch = new Hatch { IsSolid = false, Pattern = new HatchPattern("DIAGNOSTIC_PATTERN"), PatternScale = scale };
+            diagnosticHatch.Pattern.Lines.Add(new HatchPattern.Line { Offset = new XY(0, 100) });
+            diagnosticHatch.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+            {
+                new Hatch.BoundaryPath.Polyline(new[] { XYZ.Zero, new XYZ(10, 0, 0), new XYZ(10, 10, 0), new XYZ(0, 10, 0) })
+            }));
+            document.Entities.Add(diagnosticHatch);
+            return document;
+        }
+        var diagnosticExpected = DiagnosticDocument(1);
+        var diagnosticActual = DiagnosticDocument(300);
+        string diagnosticMessage = string.Empty;
+        try
+        {
+            typeof(ManagedDwgProcessor).GetMethod("VerifyRoundTrip", BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, new object[] { diagnosticExpected, diagnosticActual });
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is InvalidDataException failure) { diagnosticMessage = failure.Message; }
+        check(diagnosticMessage.Contains("블록: *Model_Space") && diagnosticMessage.Contains("객체 순번: 1")
+            && diagnosticMessage.Contains("패턴 축척: 1 → 300") && diagnosticMessage.Contains("DIAGNOSTIC_PATTERN")
+            && diagnosticMessage.Contains("예상 경계: P1[E1:Polyline]"), "Hatch verification reports exact block, object, value and boundary details");
         foreach (var version in new[] { ACadVersion.AC1015, ACadVersion.AC1018 })
             Reject(Sheet(version), "legacy-" + version, "2010 이상");
         foreach (var version in new[] { ACadVersion.AC1024, ACadVersion.AC1027 })
