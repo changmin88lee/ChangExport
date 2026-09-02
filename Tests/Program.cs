@@ -118,6 +118,20 @@ internal static class Program
     private static void Managed(string output)
     {
         var sheets = Enumerable.Range(1, 6).Select(i => new SheetDescriptor("sheet-" + i, i, "A10" + i, "구조 평면도 " + i)).ToList();
+        var linkedSheet = new SheetDescriptor("sheet-1", 101, "S101", "링크 구조 평면도",
+            "link:structure", "구조모델", false, @"C:\Models\Structure.rvt", 1);
+        Check(linkedSheet.Key != linkedSheet.UniqueId && linkedSheet.Key.StartsWith("link:structure\u001f")
+            && linkedSheet.DisplayNumber == "[구조모델] S101", "Linked sheet has a document-scoped persistent key and source label");
+        var crossModelEditor = new SheetSetEditor(new[]
+        {
+            new SheetSetDefinition { Name = "호스트", TemplateId = "template", SheetUniqueIds = new() { sheets[0].Key } },
+            new SheetSetDefinition { Name = "구조 링크", TemplateId = "template", SheetUniqueIds = new() { linkedSheet.Key } }
+        });
+        crossModelEditor.Select(crossModelEditor.Sets[0].Id, false, false);
+        crossModelEditor.Select(crossModelEditor.Sets[1].Id, true, false);
+        crossModelEditor.Combine("통합 모델 세트");
+        Check(crossModelEditor.Sets.Single().SheetUniqueIds.SequenceEqual(new[] { sheets[0].Key, linkedSheet.Key }),
+            "Host and different linked-model sheets combine into one ordered set");
         var singles = sheets.Select(s => new SheetSetDefinition { Name = s.Number, TemplateId = "template", SheetUniqueIds = new() { s.UniqueId } }).ToList();
         var editor = new SheetSetEditor(singles);
         editor.Select(editor.Sets[0].Id, false, false); editor.Select(editor.Sets[2].Id, false, true);

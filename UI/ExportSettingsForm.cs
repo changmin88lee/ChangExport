@@ -47,7 +47,7 @@ public sealed class ExportSettingsForm : Form
         Controls.Add(root);
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         title.Controls.Add(UiTheme.Heading("세트별 DWG · 모형공간 출력"));
-        title.Controls.Add(UiTheme.Muted("Revit 독립 실행 · 내장 DWG 엔진으로 시트의 도곽/뷰/주석을 모형공간에 배치합니다.")); root.Controls.Add(title);
+        title.Controls.Add(UiTheme.Muted("호스트·링크 RVT 통합 세트 · 내장 DWG 엔진으로 각 원본 시트의 도곽/뷰/주석을 모형공간에 배치합니다.")); root.Controls.Add(title);
         var settings = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, RowCount = 1, Margin = new Padding(0, 14, 0, 8) };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); settings.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         settings.Controls.Add(new Label { Text = "출력 폴더", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
@@ -75,7 +75,7 @@ public sealed class ExportSettingsForm : Form
     }
     private void Bind(IEnumerable<SheetSetDefinition> sets)
     {
-        var names = _sheets.ToDictionary(s => s.UniqueId, s => s.Number);
+        var names = _sheets.ToDictionary(s => s.Key, s => s.DisplayNumber);
         _choices = new BindingList<ExportSetChoice>(sets.Select(s => new ExportSetChoice { Set = s.Copy(),
             Template = s.TemplateId.Length == 0 ? "미지정" : _templates.FirstOrDefault(t => t.Id == s.TemplateId)?.ToString() ?? "없는 템플릿",
             Members = string.Join(" → ", s.SheetUniqueIds.Select(id => names.GetValueOrDefault(id, "[없는 시트]"))) }).ToList()); _grid.DataSource = _choices;
@@ -96,8 +96,8 @@ public sealed class ExportSettingsForm : Form
         _grid.EndEdit();
         if (SelectedSets.Count == 0) { MessageBox.Show(this, "출력할 세트를 선택하세요."); return; }
         if (string.IsNullOrWhiteSpace(OutputFolder)) { MessageBox.Show(this, "출력 폴더를 지정하세요."); return; }
-        if (SelectedSets.Any(s => s.SheetUniqueIds.Count == 0 || s.SheetUniqueIds.Any(id => !_sheets.Any(sheet => sheet.UniqueId == id))))
-        { MessageBox.Show(this, "빈 세트 또는 프로젝트에 없는 시트가 있습니다. 시트 세트 구성에서 확인하세요."); return; }
+        if (SelectedSets.Any(s => s.SheetUniqueIds.Count == 0 || s.SheetUniqueIds.Any(id => !_sheets.Any(sheet => sheet.Key == id))))
+        { MessageBox.Show(this, "빈 세트 또는 현재 로드되지 않은 모델/시트가 있습니다. 시트 세트 구성에서 확인하세요."); return; }
         if (SelectedSets.Any(s => string.IsNullOrWhiteSpace(s.TemplateId) || !_templates.Any(t => t.Id == s.TemplateId)))
         { MessageBox.Show(this, "DWG 레이어 템플릿이 미지정이거나 삭제된 세트가 있습니다. 시트·템플릿·세트 구성에서 확인하세요."); return; }
         if (SelectedSets.Any(s => s.SheetUniqueIds.Any(id => _assignments.GetValueOrDefault(id, string.Empty) != s.TemplateId)))

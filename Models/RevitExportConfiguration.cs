@@ -2,7 +2,7 @@ namespace ChangExport.Models;
 
 public sealed class RevitExportConfiguration
 {
-    public int SchemaVersion { get; set; } = 5;
+    public int SchemaVersion { get; set; } = 6;
     public string SelectedSetup { get; set; } = string.Empty;
     public List<ExportSetupEdits> Setups { get; set; } = new();
     // Old Revit setup edits remain in Setups for preservation; they are not auto-imported.
@@ -114,4 +114,12 @@ public sealed class SheetSetDefinition
     };
 }
 
-public sealed record SheetDescriptor(string UniqueId, long ElementId, string Number, string Name);
+public sealed record SheetDescriptor(string UniqueId, long ElementId, string Number, string Name,
+    string SourceKey = "", string SourceName = "", bool IsHost = true, string SourcePath = "", int LinkDepth = 0)
+{
+    // Host keys intentionally remain the historical UniqueId so every existing
+    // saved set migrates without rewriting its membership.
+    public string Key => IsHost || string.IsNullOrWhiteSpace(SourceKey) ? UniqueId : SourceKey + "\u001f" + UniqueId;
+    public string DisplayNumber => IsHost ? Number : $"[{SourceName}] {Number}";
+    public string DisplayName => IsHost ? Name : $"[{SourceName}] {Name}";
+}

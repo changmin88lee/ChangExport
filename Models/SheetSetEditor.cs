@@ -54,7 +54,7 @@ public sealed class SheetSetEditor
         var previous = Sets[index]; Sets.RemoveAt(index); SelectedIds.Clear();
         foreach (string id in previous.SheetUniqueIds)
         {
-            var single = new SheetSetDefinition { Name = sheets.TryGetValue(id, out var sheet) ? sheet.Number : "없는 시트",
+            var single = new SheetSetDefinition { Name = sheets.TryGetValue(id, out var sheet) ? sheet.DisplayNumber : "없는 시트",
                 TemplateId = previous.TemplateId, SheetUniqueIds = new() { id }, Direction = previous.Direction };
             Sets.Insert(index++, single); SelectedIds.Add(single.Id);
         }

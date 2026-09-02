@@ -17,7 +17,7 @@ internal static class SpacingRegression
         string path = Path.Combine(output, "legacy-spacing.json"), legacy = JsonSerializer.Serialize(source);
         File.WriteAllText(path, legacy);
         var store = new ExportConfigurationStore(path); var config = store.Load();
-        check(config.SchemaVersion == 5 && config.SheetSpacingMm == 0 && config.SheetSets.All(s => s.MarginMm == 0),
+        check(config.SchemaVersion == 6 && config.SheetSpacingMm == 0 && config.SheetSets.All(s => s.MarginMm == 0),
             "Legacy settings migrate to one global touching-sheet spacing");
         check(File.ReadAllText(path) == legacy && !File.Exists(path + ".bak"), "Loading does not rewrite the user profile");
         check(config.SelectedSetup == "기존 설정" && config.Setups[0].Layers[0].Layer == "S-WALL"
@@ -30,7 +30,7 @@ internal static class SpacingRegression
         } };
         string schema4Path = Path.Combine(output, "schema4-spacing.json"); File.WriteAllText(schema4Path, JsonSerializer.Serialize(schema4));
         var migrated4 = new ExportConfigurationStore(schema4Path).Load();
-        check(migrated4.SchemaVersion == 5 && migrated4.SheetSpacingMm == 1250 && migrated4.SheetSets.All(s => s.MarginMm == 0),
+        check(migrated4.SchemaVersion == 6 && migrated4.SheetSpacingMm == 1250 && migrated4.SheetSets.All(s => s.MarginMm == 0),
             "Schema 4 converts the first persisted set spacing to the new global value and retires per-set values");
 
         config.SheetSpacingMm = 750; store.Save(config); var saved = store.Load();

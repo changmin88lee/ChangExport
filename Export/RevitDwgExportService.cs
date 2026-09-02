@@ -50,6 +50,9 @@ public sealed class RevitDwgExportService
         var allMaterialRules = runtimes.Values.SelectMany(r => r.MaterialRules).ToList();
         var blockSources = ExportGeometryOptions.ReadBlockSources(document);
         var excludedLayers = RevitLayerMappingService.InternalExcludedLayers(allLayers);
+        var sheetSources = SheetSetService.ReadSheetSources(document);
+        var sourceSessions = new Dictionary<string, LinkedSheetDocumentSession>(StringComparer.Ordinal);
+        var linkedRuntimes = new Dictionary<(string Source, string Template), SourceTemplateRuntime>();
         try
         {
             for (int setIndex = 0; setIndex < sets.Count; setIndex++)
@@ -67,47 +70,95 @@ public sealed class RevitDwgExportService
                         throw new InvalidDataException("DWG 레이어 템플릿이 지정되지 않았거나 삭제된 세트입니다.");
                     if (set.SheetUniqueIds.Any(id => configuration.SheetTemplateIds.GetValueOrDefault(id, string.Empty) != set.TemplateId))
                         throw new InvalidDataException("세트에 서로 다른 DWG 레이어 템플릿을 사용하는 시트가 포함되어 있습니다.");
-                    var layers = runtime.Layers; var materialRules = runtime.MaterialRules;
-                    var options = runtime.Options; var wideLines = runtime.WideLines;
                     string setFolder = Path.Combine(staging, $"set_{setIndex + 1:000}"); Directory.CreateDirectory(setFolder);
                     using var preparedQueue = new DwgPreparationQueue(cancel, pump);
                     for (int sheetIndex = 0; sheetIndex < set.SheetUniqueIds.Count; sheetIndex++)
                     {
                         CheckCancel(cancel);
-                        ViewSheet sheet = document.GetElement(set.SheetUniqueIds[sheetIndex]) as ViewSheet
-                            ?? throw new InvalidOperationException("프로젝트에 없는 시트입니다.");
+                        string sheetKey = set.SheetUniqueIds[sheetIndex];
+                        if (!sheetSources.TryGetValue(sheetKey, out SheetSetService.SheetSource? sheetSource))
+                            throw new InvalidOperationException("현재 로드된 호스트/링크 모델에 없는 시트입니다.");
+                        string sessionKey = sheetSource.Sheet.IsHost ? "host" : sheetSource.Sheet.SourceKey;
+                        if (!sourceSessions.TryGetValue(sessionKey, out LinkedSheetDocumentSession? session))
+                        {
+                            session = LinkedSheetDocumentSession.Open(document, sheetSource.Document,
+                                sheetSource.Sheet.SourceName, staging, item.Warnings);
+                            sourceSessions.Add(sessionKey, session);
+                        }
+                        Document sourceDocument = session.Document;
+                        ViewSheet sheet = sourceDocument.GetElement(sheetSource.Sheet.UniqueId) as ViewSheet
+                            ?? throw new InvalidOperationException($"원본 모델 '{sheetSource.Sheet.SourceName}'에서 시트를 다시 찾을 수 없습니다.");
+                        string sheetLabel = sheetSource.Sheet.DisplayNumber;
+                        List<RevitLayerRow> layers;
+                        List<MaterialLayerRule> materialRules;
+                        DWGExportOptions options;
+                        List<WideLineLayer> wideLines;
+                        List<FamilyBlockSource> sheetBlockSources;
+                        if (sourceDocument == document)
+                        {
+                            layers = runtime.Layers; materialRules = runtime.MaterialRules; options = runtime.Options;
+                            wideLines = runtime.WideLines; sheetBlockSources = blockSources;
+                        }
+                        else
+                        {
+                            var sourceRuntimeKey = (sessionKey, set.TemplateId);
+                            if (!linkedRuntimes.TryGetValue(sourceRuntimeKey, out SourceTemplateRuntime? sourceRuntime))
+                            {
+                                var sourceMapping = new RevitLayerMappingService(sourceDocument);
+                                var sourceLayers = sourceMapping.Read(set.TemplateId, configuration);
+                                var sourceMaterials = RevitLayerMappingService.RebindImportedMaterials(runtime.MaterialRules,
+                                    RevitMaterialCatalog.Read(sourceDocument));
+                                var sourceIssues = RevitLayerMappingService.Validate(sourceLayers)
+                                    .Concat(RevitLayerMappingService.ValidateMaterialRules(sourceMaterials))
+                                    .Concat(RevitLayerMappingService.ValidateCombined(sourceLayers, sourceMaterials)).Distinct().ToList();
+                                if (sourceIssues.Count > 0)
+                                    throw new InvalidDataException($"{sheetSource.Sheet.SourceName} / {runtime.Template.SetupName}: "
+                                        + string.Join(Environment.NewLine, sourceIssues.Take(12)));
+                                var sourceOptions = sourceMapping.Apply(runtime.Template.SetupName, sourceLayers);
+                                sourceOptions.MergedViews = false; sourceOptions.FileVersion = ACADVersion.R2010;
+                                sourceOptions.TargetUnit = ExportUnit.Millimeter;
+                                sourceRuntime = new SourceTemplateRuntime(sourceLayers, sourceMaterials, sourceOptions,
+                                    ExportGeometryOptions.ConfigureWideLines(sourceDocument, sourceOptions, sourceLayers, wideLineKeyword),
+                                    ExportGeometryOptions.ReadBlockSources(sourceDocument));
+                                linkedRuntimes.Add(sourceRuntimeKey, sourceRuntime);
+                            }
+                            layers = sourceRuntime.Layers; materialRules = sourceRuntime.MaterialRules; options = sourceRuntime.Options;
+                            wideLines = sourceRuntime.WideLines; sheetBlockSources = sourceRuntime.BlockSources;
+                        }
                         string nativeDirectory = Path.Combine(setFolder, $"native_{sheetIndex + 1:000}"); Directory.CreateDirectory(nativeDirectory);
-                        stage = $"{sheet.SheetNumber}: Revit 기본 DWG 생성";
-                        var placedViews = sheet.GetAllPlacedViews().Select(id => document.GetElement(id)).OfType<Autodesk.Revit.DB.View>()
+                        stage = $"{sheetLabel}: Revit 기본 DWG 생성";
+                        var placedViews = sheet.GetAllPlacedViews().Select(id => sourceDocument.GetElement(id)).OfType<Autodesk.Revit.DB.View>()
                             .Select(v => new { id = v.Id.Value, name = v.Name, type = v.ViewType.ToString(), scale = v.Scale }).ToList();
-                        var schedules = new FilteredElementCollector(document, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>()
-                            .Select(s => new { id = s.ScheduleId.Value, name = document.GetElement(s.ScheduleId)?.Name }).ToList();
+                        var schedules = new FilteredElementCollector(sourceDocument, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>()
+                            .Select(s => new { id = s.ScheduleId.Value, name = sourceDocument.GetElement(s.ScheduleId)?.Name }).ToList();
                         item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, sheetUniqueId = sheet.UniqueId,
+                            sourceModel = sheetSource.Sheet.SourceName, sourceKey = sheetSource.Sheet.SourceKey,
+                            sourceKind = sheetSource.Sheet.IsHost ? "Host" : "LinkedRvt", linkDepth = sheetSource.Sheet.LinkDepth,
                             templateId = runtime.Template.SetupId, templateName = runtime.Template.SetupName, placedViews, schedules,
                             outlineFeet = new { minU = sheet.Outline.Min.U, minV = sheet.Outline.Min.V, maxU = sheet.Outline.Max.U, maxV = sheet.Outline.Max.V } });
-                        progress($"{setIndex + 1}/{sets.Count} 세트 · {set.Name}\n{sheetIndex + 1}/{set.SheetUniqueIds.Count} 시트 · {sheet.SheetNumber} · Revit DWG 생성");
+                        progress($"{setIndex + 1}/{sets.Count} 세트 · {set.Name}\n{sheetIndex + 1}/{set.SheetUniqueIds.Count} 시트 · {sheetLabel} · Revit DWG 생성");
                         var nativeClock = Stopwatch.StartNew();
-                        bool success = document.Export(nativeDirectory, "sheet", new List<ElementId> { sheet.Id }, options);
-                        item.TimingsMs[$"{sheet.SheetNumber}:native"] = nativeClock.Elapsed.TotalMilliseconds;
+                        bool success = sourceDocument.Export(nativeDirectory, "sheet", new List<ElementId> { sheet.Id }, options);
+                        item.TimingsMs[$"{sheetLabel}:native"] = nativeClock.Elapsed.TotalMilliseconds;
                         if (!success || !File.Exists(Path.Combine(nativeDirectory, "sheet.dwg"))) throw new IOException("Revit이 시트 DWG를 생성하지 못했습니다.");
                         CheckCancel(cancel);
                         var request = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = true,
-                            LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = blockSources,
+                            LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines, FamilySources = sheetBlockSources,
                             ExcludedLayers = excludedLayers };
                         string input = Path.Combine(nativeDirectory, "sheet.dwg");
                         if (layers.Any(r => r.IsCustom) || materialRules.Count > 0)
                         {
-                            stage = $"{sheet.SheetNumber}: 임시 복제 시트 필터";
-                            progress($"{set.Name} · {sheet.SheetNumber}\n독립 복제 뷰에서 복합재료·유형 이름 필터 적용 중");
+                            stage = $"{sheetLabel}: 임시 복제 시트 필터";
+                            progress($"{set.Name} · {sheetLabel}\n독립 복제 뷰에서 복합재료·유형 이름 필터 적용 중");
                             try
                             {
                                 var filterClock = Stopwatch.StartNew();
-                                var filtered = TemporaryFilterExport.Export(document, sheet, options, layers, materialRules, nativeDirectory,
+                                var filtered = TemporaryFilterExport.Export(sourceDocument, sheet, options, layers, materialRules, nativeDirectory,
                                     Path.Combine(setFolder, $"filtered_{sheetIndex + 1:000}"), item.Warnings, cancel);
                                 input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList();
                                 request.MaterialAppearanceRemaps = filtered.MaterialAppearanceRemaps.ToList();
                                 request.TextReplacements = new(filtered.TextReplacements);
-                                item.TimingsMs[$"{sheet.SheetNumber}:filter"] = filterClock.Elapsed.TotalMilliseconds;
+                                item.TimingsMs[$"{sheetLabel}:filter"] = filterClock.Elapsed.TotalMilliseconds;
                                 request.ExpectedRuleMatches = new(filtered.MatchedElements);
                                 item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterMatches = filtered.MatchedElements,
                                     filterRemaps = filtered.Remaps, linkedMaterialRemaps = filtered.MaterialAppearanceRemaps });
@@ -118,15 +169,15 @@ public sealed class RevitDwgExportService
                             {
                                 // The temporary exporter always rolls back before returning or throwing.
                                 // Preserve the usable unfiltered sheet and explicitly report non-application.
-                                item.Warnings.Add($"필터 미반영: 시트 {sheet.SheetNumber} · {ex.Message} · 기본 카테고리 출력은 계속합니다.");
+                                item.Warnings.Add($"필터 미반영: 시트 {sheetLabel} · {ex.Message} · 기본 카테고리 출력은 계속합니다.");
                                 item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterError = ex.ToString() });
                             }
                         }
-                        stage = $"{sheet.SheetNumber}: 참조 결합·모형공간 변환";
-                        progress($"{set.Name} · {sheet.SheetNumber}\n내장 엔진 모형공간 변환 중 · 최종 저장 시 재열기 검사");
-                        preparedQueue.Enqueue(sheet.SheetNumber, request, input, Path.Combine(nativeDirectory, "sheet.dwg"));
+                        stage = $"{sheetLabel}: 참조 결합·모형공간 변환";
+                        progress($"{set.Name} · {sheetLabel}\n내장 엔진 모형공간 변환 중 · 최종 저장 시 재열기 검사");
+                        preparedQueue.Enqueue(sheetLabel, request, input, Path.Combine(nativeDirectory, "sheet.dwg"));
                         if (placedViews.Count > 0 && Directory.GetFiles(nativeDirectory, "*.dwg").Length == 1)
-                            item.Warnings.Add($"도면 내용 확인: 시트 {sheet.SheetNumber}의 배치 뷰는 {placedViews.Count}개지만 별도 뷰 DWG가 없습니다. 도곽만 생성된 경우를 포함하여 원본 시트와 비교하세요. 파일 저장과 내용 완전성은 별도입니다.");
+                            item.Warnings.Add($"도면 내용 확인: 시트 {sheetLabel}의 배치 뷰는 {placedViews.Count}개지만 별도 뷰 DWG가 없습니다. 도곽만 생성된 경우를 포함하여 원본 시트와 비교하세요. 파일 저장과 내용 완전성은 별도입니다.");
                     }
                     var prepared = preparedQueue.Finish();
                     foreach (var entry in prepared)
@@ -150,7 +201,7 @@ public sealed class RevitDwgExportService
                     progress($"{set.Name}\n{set.SheetUniqueIds.Count}장 {(set.Direction == "Vertical" ? "세로" : "가로")} 배치 · 최종 DWG 검사 중");
                     var merged = processor.MergePrepared(new BridgeRequest { Operation = "Merge", OutputPath = finalStage,
                         Direction = set.Direction, MarginMm = configuration.SheetSpacingMm, RevitSheet = true, UseLayerColors = true,
-                        LayerStyles = RevitLayerMappingService.GetAppearances(layers), WideLineLayers = wideLines,
+                        LayerStyles = RevitLayerMappingService.GetAppearances(runtime.Layers), WideLineLayers = runtime.WideLines,
                         ExcludedLayers = excludedLayers },
                         prepared.Select(p => p.Drawing).ToList(), setFolder, cancel, pump);
                     foreach (var timing in merged.TimingsMs) item.TimingsMs[timing.Key] = timing.Value;
@@ -168,6 +219,13 @@ public sealed class RevitDwgExportService
         }
         finally
         {
+            foreach (SourceTemplateRuntime runtime in linkedRuntimes.Values) runtime.Options.Dispose();
+            foreach (LinkedSheetDocumentSession session in sourceSessions.Values.Reverse())
+            {
+                session.Dispose();
+                if (!string.IsNullOrWhiteSpace(session.CleanupWarning))
+                    foreach (ExportItemResult item in result.Items) item.Warnings.Add(session.CleanupWarning);
+            }
             result.ManifestPath = Path.Combine(outputFolder, $"ChangExport_Manifest_{jobId}.json");
             File.WriteAllText(result.ManifestPath, JsonSerializer.Serialize(new
             {
@@ -184,6 +242,7 @@ public sealed class RevitDwgExportService
                 blockSources = blockSources.Select(f => new { f.Identity, f.Label, f.Category, f.SourceKind, f.PlacementType,
                     f.IsTitleBlock, f.IsDetailGroup, f.NativeLabels, f.NativeElementIds, f.ExclusionReason, knownPrefixCount = f.NativePrefixes.Count }),
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = false, originalSetupModified = false,
+                sheetSourcePolicy = "Host and loaded local/network Revit links, including nested loaded links; linked RVTs are filtered in disposable local copies and never modified",
                 customFiltersRequested = runtimes.Values.Sum(r => r.Layers.Count(row => row.IsCustom)), materialFiltersRequested = runtimes.Values.Sum(r => r.MaterialRules.Count),
                 customFilterMethod = "Independent temporary sheet/view copies; host compound wall/floor Parts; linked type-name filters propagated by host view filters; unambiguous linked material hatch/boundary signatures; color marker remap and transaction-group rollback; lower/beyond graphics excluded",
                 materialRules = allMaterialRules,
@@ -196,6 +255,8 @@ public sealed class RevitDwgExportService
     }
     private sealed record TemplateRuntime(ExportSetupEdits Template, List<RevitLayerRow> Layers,
         List<MaterialLayerRule> MaterialRules, DWGExportOptions Options, List<WideLineLayer> WideLines);
+    private sealed record SourceTemplateRuntime(List<RevitLayerRow> Layers, List<MaterialLayerRule> MaterialRules,
+        DWGExportOptions Options, List<WideLineLayer> WideLines, List<FamilyBlockSource> BlockSources);
     private static void CheckCancel(Func<bool> cancel) { if (cancel()) throw new OperationCanceledException(); }
     public static string PublishUnique(string source, string outputFolder, string name)
     {

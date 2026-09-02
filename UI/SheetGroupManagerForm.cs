@@ -22,7 +22,7 @@ public sealed class SheetGroupManagerForm : Form
     public SheetGroupManagerForm(IEnumerable<SheetDescriptor> sheets, IEnumerable<SheetSetDefinition> sets,
         IReadOnlyList<LayerTemplateChoice> templates, IReadOnlyDictionary<string, string> assignments)
     {
-        _sheets = sheets.ToDictionary(s => s.UniqueId); _editor = new SheetSetEditor(sets); _templates = templates;
+        _sheets = sheets.ToDictionary(s => s.Key); _editor = new SheetSetEditor(sets); _templates = templates;
         _assignments = new Dictionary<string, string>(assignments, StringComparer.Ordinal);
         Text = "시트 세트 구성"; ClientSize = new Size(1000, 720); MinimumSize = new Size(860, 580); UiTheme.Apply(this);
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), RowCount = 5, ColumnCount = 1 };
@@ -31,7 +31,7 @@ public sealed class SheetGroupManagerForm : Form
         Controls.Add(root);
         var title = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         title.Controls.Add(UiTheme.Heading("시트를 선택하여 세트로 묶으세요"));
-        title.Controls.Add(UiTheme.Muted("미지정 시트끼리 또는 같은 DWG 레이어 템플릿끼리 세트로 묶을 수 있습니다. 세트의 템플릿 변경은 내부 시트 전체에 적용됩니다.")); root.Controls.Add(title);
+        title.Controls.Add(UiTheme.Muted("호스트와 서로 다른 링크 모델의 시트를 함께 선택할 수 있습니다. 같은 DWG 레이어 템플릿끼리 세트로 묶으며 세트의 템플릿 변경은 내부 시트 전체에 적용됩니다.")); root.Controls.Add(title);
         var toolbar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 10) };
         _name = new TextBox { Width = 180, PlaceholderText = "새 세트 이름", Margin = new Padding(0, 6, 8, 0) }; toolbar.Controls.Add(_name);
         var create = UiTheme.PrimaryButton("+ 선택 시트 세트"); create.Click += (_, _) => Act(() => _editor.Combine(_name.Text));
@@ -103,7 +103,7 @@ public sealed class SheetGroupManagerForm : Form
             {
                 int index = i; string id = set.SheetUniqueIds[i]; bool exists = _sheets.TryGetValue(id, out var sheet);
                 var row = new FlowLayoutPanel { Width = 740, Height = 30, Margin = Padding.Empty, WrapContents = false };
-                row.Controls.Add(new Label { Text = $"{i + 1:00}   " + (exists ? $"{sheet!.Number}   {sheet.Name}" : "[프로젝트에 없는 시트]"),
+                row.Controls.Add(new Label { Text = $"{i + 1:00}   " + (exists ? $"{sheet!.DisplayNumber}   {sheet.Name}" : "[현재 로드되지 않은 모델/시트]"),
                     Width = 600, ForeColor = exists ? UiTheme.Navy : Color.Firebrick, AutoEllipsis = true, Margin = new Padding(8, 6, 4, 0) });
                 var up = new Button { Text = "↑", Width = 32, Height = 26, Enabled = i > 0, AccessibleName = "시트 위로" };
                 var down = new Button { Text = "↓", Width = 32, Height = 26, Enabled = i < set.SheetUniqueIds.Count - 1, AccessibleName = "시트 아래로" };

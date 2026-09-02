@@ -40,7 +40,7 @@ internal static class OutputSetupRegression
             SheetSets = new() { new() { Name = "기존 세트", TemplateId = "legacy", SheetUniqueIds = new() { "sheet-a" } } } };
         string scopedPath = Path.Combine(output, "scoped-config.json"); File.WriteAllText(scopedPath, System.Text.Json.JsonSerializer.Serialize(scopedConfig));
         var migrated = new ExportConfigurationStore(scopedPath).Load();
-        check(migrated.SchemaVersion == 5 && migrated.OutputSetups.Count == 2
+        check(migrated.SchemaVersion == 6 && migrated.OutputSetups.Count == 2
             && migrated.OutputSetups.All(s => s.Layers.All(r => r.ViewScope.Length == 0) && s.MaterialRules.All(r => r.ViewScope.Length == 0))
             && migrated.OutputSetups.Any(s => s.SetupName.EndsWith("구조평면도") && s.Layers.Any(r => r.Layer == "S-WALL-STRUCTURAL-PLAN")),
             "V18 plan scopes migrate to separate freely named DWG layer templates");
