@@ -601,10 +601,13 @@ public sealed partial class ManagedDwgProcessor
                     var differences = new List<string>();
                     if (beforeHatch.IsSolid != afterHatch.IsSolid) differences.Add($"솔리드: {beforeHatch.IsSolid} → {afterHatch.IsSolid}");
                     if (beforeHatch.Pattern?.Name != afterHatch.Pattern?.Name) differences.Add($"패턴 이름: {beforeHatch.Pattern?.Name ?? "없음"} → {afterHatch.Pattern?.Name ?? "없음"}");
-                    if (Math.Abs(beforeHatch.PatternScale - afterHatch.PatternScale) > Epsilon)
+                    // SOLID has no pattern lines. ACadSharp/DWG legitimately normalizes
+                    // its unused scale and angle while preserving the visible fill.
+                    if (!beforeHatch.IsSolid && Math.Abs(beforeHatch.PatternScale - afterHatch.PatternScale) > Epsilon)
                         differences.Add($"패턴 축척: {DiagnosticNumber(beforeHatch.PatternScale)} → {DiagnosticNumber(afterHatch.PatternScale)}");
-                    if (Math.Abs(Math.Sin(beforeHatch.PatternAngle) - Math.Sin(afterHatch.PatternAngle)) > Epsilon
+                    if (!beforeHatch.IsSolid && (Math.Abs(Math.Sin(beforeHatch.PatternAngle) - Math.Sin(afterHatch.PatternAngle)) > Epsilon
                         || Math.Abs(Math.Cos(beforeHatch.PatternAngle) - Math.Cos(afterHatch.PatternAngle)) > Epsilon)
+                    )
                         differences.Add($"패턴 각도(rad): {DiagnosticNumber(beforeHatch.PatternAngle)} → {DiagnosticNumber(afterHatch.PatternAngle)}");
                     if (beforeHatch.Paths.Count != afterHatch.Paths.Count)
                         differences.Add($"경계 경로 수: {beforeHatch.Paths.Count} → {afterHatch.Paths.Count}");

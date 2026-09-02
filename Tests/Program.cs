@@ -240,7 +240,7 @@ internal static class Program
             Check(Descendants(resultForm).OfType<Button>().Any(button => button.Text == "진단 TXT 저장"), "Export result exposes diagnostic TXT save");
         }
         string diagnosticText = ExportDiagnosticText.Build(exportResult);
-        Check(diagnosticText.Contains("Beta 0.12.3") && diagnosticText.Contains("블록: CE_TEST")
+        Check(diagnosticText.Contains("Beta 0.12.4") && diagnosticText.Contains("블록: CE_TEST")
             && diagnosticText.Contains("패턴 축척: 1 → 300") && diagnosticText.Contains("\"hatch\": \"FP1\"")
             && diagnosticText.Contains("verify: 12.500"), "Diagnostic TXT contains errors, sheet details and timings");
         Check(!File.Exists(Path.Combine(output, "unexpected.json")), "No UI execution side effects");

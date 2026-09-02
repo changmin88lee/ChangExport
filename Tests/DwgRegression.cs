@@ -151,6 +151,28 @@ internal static class DwgRegression
         check(diagnosticMessage.Contains("블록: *Model_Space") && diagnosticMessage.Contains("객체 순번: 1")
             && diagnosticMessage.Contains("패턴 축척: 1 → 300") && diagnosticMessage.Contains("DIAGNOSTIC_PATTERN")
             && diagnosticMessage.Contains("예상 경계: P1[E1:Polyline]"), "Hatch verification reports exact block, object, value and boundary details");
+        CadDocument SolidDiagnosticDocument(double scale, double angle)
+        {
+            var document = new CadDocument(ACadVersion.AC1024); document.Header.InsUnits = UnitsType.Millimeters;
+            var fill = new Hatch { IsSolid = true, PatternScale = scale, PatternAngle = angle };
+            fill.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+            {
+                new Hatch.BoundaryPath.Line { Start = XY.Zero, End = new XY(10, 0) },
+                new Hatch.BoundaryPath.Line { Start = new XY(10, 0), End = new XY(10, 10) },
+                new Hatch.BoundaryPath.Line { Start = new XY(10, 10), End = new XY(0, 10) },
+                new Hatch.BoundaryPath.Line { Start = new XY(0, 10), End = XY.Zero }
+            }));
+            document.Entities.Add(fill);
+            return document;
+        }
+        bool solidNormalizationAccepted = true;
+        try
+        {
+            typeof(ManagedDwgProcessor).GetMethod("VerifyRoundTrip", BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, new object[] { SolidDiagnosticDocument(300, -3.1415352184156), SolidDiagnosticDocument(1, 0) });
+        }
+        catch (TargetInvocationException) { solidNormalizationAccepted = false; }
+        check(solidNormalizationAccepted, "Solid fill ignores nonvisual pattern scale and angle normalization while retaining its boundary checks");
         foreach (var version in new[] { ACadVersion.AC1015, ACadVersion.AC1018 })
             Reject(Sheet(version), "legacy-" + version, "2010 이상");
         foreach (var version in new[] { ACadVersion.AC1024, ACadVersion.AC1027 })
