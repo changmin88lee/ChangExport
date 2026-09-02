@@ -13,6 +13,7 @@ internal static class TemporaryFilterExport
     {
         public string Drawing { get; set; } = "";
         public List<ColorLayerRemap> Remaps { get; } = new();
+        public List<MaterialAppearanceRemap> MaterialAppearanceRemaps { get; } = new();
         public Dictionary<string, string> TextReplacements { get; } = new();
         public Dictionary<string, int> MatchedElements { get; } = new();
     }
@@ -64,6 +65,8 @@ internal static class TemporaryFilterExport
         }
         foreach (var rule in rules) Register("type:" + rule.RuleId, rule.Layer, rule.Color, rule.CutLayer, rule.CutColor, rule.RuleId, false, 0);
         foreach (var rule in materialRules) result.MatchedElements.TryAdd(rule.RuleId, 0);
+        result.MaterialAppearanceRemaps.AddRange(LinkedModelFilterSupport.BuildMaterialRemaps(
+            document, materialRules, result.MatchedElements, warnings));
         static int FunctionPriority(int value) => (MaterialFunctionAssignment)value switch
         {
             MaterialFunctionAssignment.Finish1 => 700,
@@ -186,6 +189,8 @@ internal static class TemporaryFilterExport
                     document.Regenerate();
                     usableViews.Add(view);
                 }
+                LinkedModelFilterSupport.ApplyTypeFilters(document, usableViews, rules,
+                    rule => markers["type:" + rule.RuleId], temporaryIds, result.MatchedElements, warnings);
                 var partSources = new HashSet<ElementId>();
                 var viewsWithMaterialParts = new HashSet<ElementId>();
                 var sourcesByView = new Dictionary<ElementId, HashSet<ElementId>>();
@@ -291,7 +296,7 @@ internal static class TemporaryFilterExport
             if (result.MatchedElements.Values.Sum() == 0)
             {
                 result.Drawing = Path.Combine(baselineDirectory, "sheet.dwg"); result.Remaps.Clear(); result.TextReplacements.Clear();
-                warnings.Add("필터: 일치하는 현재 프로젝트 재료·유형이 없어 기본 카테고리 DWG를 유지했습니다. 링크 내부 객체는 호스트 필터 대상이 아닙니다.");
+                warnings.Add("필터: 호스트와 로드된 링크에서 일치하는 재료·유형이 없어 기본 카테고리 DWG를 유지했습니다.");
                 return result;
             }
             if (cancel()) throw new OperationCanceledException();

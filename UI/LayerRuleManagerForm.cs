@@ -96,7 +96,7 @@ public sealed class LayerRuleManagerForm : Form
 
     private List<RevitLayerRow> Rows(string id) { if (!_drafts.TryGetValue(id, out var rows)) _drafts[id] = rows = _read(id); foreach (var row in rows) row.ViewScope = ""; return rows; }
     private List<MaterialLayerRule> Materials(string id) { if (!_materialDrafts.TryGetValue(id, out var rules)) _materialDrafts[id] = rules = RevitLayerMappingService.ReadMaterialRules(id, _configuration); foreach (var rule in rules) rule.ViewScope = ""; return rules; }
-    private void LoadMaterialRows() { var rules = Materials(TemplateId); _materialGrid.DataSource = new BindingList<MaterialLayerRule>(rules); int unresolved = rules.Count(r => string.IsNullOrWhiteSpace(r.MaterialUniqueId)); _materialStatus.Text = $"재료 필터 {rules.Count:N0}개 · 미연결 {unresolved:N0}개 · 복합벽·복합바닥에만 적용"; }
+    private void LoadMaterialRows() { var rules = Materials(TemplateId); _materialGrid.DataSource = new BindingList<MaterialLayerRule>(rules); int unresolved = rules.Count(r => string.IsNullOrWhiteSpace(r.MaterialUniqueId)); _materialStatus.Text = $"재료 필터 {rules.Count:N0}개 · 미연결 {unresolved:N0}개 · 호스트·링크 복합벽/바닥"; }
     private void AddMaterialRule()
     {
         if (!_materialGrid.EndEdit()) return; var rules = Materials(TemplateId); var material = _materials.FirstOrDefault(m => m.ElementId >= 0 && m.UniqueId.Length > 0 && rules.All(r => r.MaterialUniqueId != m.UniqueId));

@@ -104,10 +104,13 @@ public sealed class RevitDwgExportService
                                 var filterClock = Stopwatch.StartNew();
                                 var filtered = TemporaryFilterExport.Export(document, sheet, options, layers, materialRules, nativeDirectory,
                                     Path.Combine(setFolder, $"filtered_{sheetIndex + 1:000}"), item.Warnings, cancel);
-                                input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList(); request.TextReplacements = new(filtered.TextReplacements);
+                                input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList();
+                                request.MaterialAppearanceRemaps = filtered.MaterialAppearanceRemaps.ToList();
+                                request.TextReplacements = new(filtered.TextReplacements);
                                 item.TimingsMs[$"{sheet.SheetNumber}:filter"] = filterClock.Elapsed.TotalMilliseconds;
                                 request.ExpectedRuleMatches = new(filtered.MatchedElements);
-                                item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterMatches = filtered.MatchedElements, filterRemaps = filtered.Remaps });
+                                item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterMatches = filtered.MatchedElements,
+                                    filterRemaps = filtered.Remaps, linkedMaterialRemaps = filtered.MaterialAppearanceRemaps });
                             }
                             catch (OperationCanceledException) { throw; }
                             catch (TemporaryExportRestoreException) { throw; }
@@ -132,6 +135,7 @@ public sealed class RevitDwgExportService
                         item.SheetDiagnostics.Add(new { sheet = entry.Sheet, input = entry.Drawing.Source, conversion.ConvertedViewports,
                             conversion.CustomRuleEntityCounts, conversion.ModelScale, conversion.ExplodedInserts, conversion.BoundaryBlocksRetained, conversion.NormalizedEntityColors,
                             conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.MaterialBoundaryDuplicatesRemoved,
+                            conversion.LinkedMaterialFillsRemapped, conversion.LinkedMaterialBoundariesRemapped,
                             conversion.FilterContainerMarkersIgnored, conversion.FilterLowerGraphicsSkipped, conversion.ExcludedEntities,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
                             conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
@@ -181,7 +185,7 @@ public sealed class RevitDwgExportService
                     f.IsTitleBlock, f.IsDetailGroup, f.NativeLabels, f.NativeElementIds, f.ExclusionReason, knownPrefixCount = f.NativePrefixes.Count }),
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = false, originalSetupModified = false,
                 customFiltersRequested = runtimes.Values.Sum(r => r.Layers.Count(row => row.IsCustom)), materialFiltersRequested = runtimes.Values.Sum(r => r.MaterialRules.Count),
-                customFilterMethod = "Independent temporary sheet/view copies; compound wall/floor exact material and type-name filters; color marker remap and transaction-group rollback; lower/beyond graphics excluded",
+                customFilterMethod = "Independent temporary sheet/view copies; host compound wall/floor Parts; linked type-name filters propagated by host view filters; unambiguous linked material hatch/boundary signatures; color marker remap and transaction-group rollback; lower/beyond graphics excluded",
                 materialRules = allMaterialRules,
                 sheetSpacingMm = configuration.SheetSpacingMm, requestedSets = sets,
                 layerEdits = allLayers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items

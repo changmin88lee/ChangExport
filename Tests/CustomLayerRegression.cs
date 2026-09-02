@@ -124,5 +124,48 @@ internal static class CustomLayerRegression
         check(materialEntities.OfType<Line>().Any(line => line.StartPoint.X == 120 && line.Layer.Name == "NATIVE-MATERIAL")
             && materialResponse.FilterLowerGraphicsSkipped == 1,
             "Beyond lower graphic is excluded from type/material remapping");
+
+        // Linked compound materials cannot become host Parts. Their unambiguous
+        // native hatch signature takes precedence over the linked type marker and
+        // moves the matching boundary while preserving the Revit fill appearance.
+        var linked = DwgRegression.Sheet(ACadVersion.AC1024);
+        var linkedBlock = new BlockRecord("LINKED_APARTMENT_MODEL");
+        var linkedPattern = new HatchPattern("LINK_BRICK_75");
+        linkedPattern.Lines.Add(new HatchPattern.Line { Angle = 0, BasePoint = XY.Zero, Offset = new XY(0, 7.5) });
+        var linkedFill = new Hatch { Pattern = linkedPattern, PatternType = HatchPatternType.Custom,
+            PatternScale = 2, Color = new ACadSharp.Color(92, 61, 43) };
+        linkedFill.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+        {
+            new Hatch.BoundaryPath.Polyline(new[] { new XYZ(0, 0, 0), new XYZ(20, 0, 0),
+                new XYZ(20, 10, 0), new XYZ(0, 10, 0) })
+        }));
+        linkedBlock.Entities.Add(linkedFill);
+        linkedBlock.Entities.Add(new Line { StartPoint = new XYZ(0, 0, 0), EndPoint = new XYZ(20, 0, 0) });
+        linkedBlock.Entities.Add(new Line { StartPoint = new XYZ(20, 0, 0), EndPoint = new XYZ(20, 10, 0) });
+        linkedBlock.Entities.Add(new Line { StartPoint = new XYZ(20, 10, 0), EndPoint = new XYZ(0, 10, 0) });
+        linkedBlock.Entities.Add(new Line { StartPoint = new XYZ(0, 10, 0), EndPoint = new XYZ(0, 0, 0) });
+        linkedBlock.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(20, 10, 0) });
+        linked.Entities.Add(new Insert(linkedBlock) { Color = new ACadSharp.Color(200) });
+        string linkedInput = Path.Combine(output, "linked-material-source.dwg");
+        string linkedOutput = Path.Combine(output, "linked-material-final.dwg");
+        DwgWriter.Write(linkedInput, linked);
+        var linkedResponse = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", OutputPath = linkedOutput,
+            ColorRemaps = new() { new() { MarkerAci = 200, Layer = "A-LINK-TYPE", Color = 3, RuleId = "link-type" } },
+            MaterialAppearanceRemaps = new()
+            {
+                new() { Pattern = "REVIT_LINK_BRICK", DisplayRgb = (92 << 16) | (61 << 8) | 43,
+                    Layer = "A-LINK-BRICK", Color = 30, RuleId = "link-brick", MaterialName = "벽돌",
+                    BoundaryPriority = 700, PatternLines = new() { new() { SpacingMm = 15 } } }
+            }
+        }, linkedInput, output);
+        var linkedEntities = DwgRegression.Walk(DwgReader.Read(linkedOutput).ModelSpace).ToArray();
+        var linkedSavedFill = linkedEntities.OfType<Hatch>().Single(hatch => hatch.Pattern?.Name == "LINK_BRICK_75");
+        check(linkedSavedFill.Layer.Name == "A-LINK-BRICK" && linkedSavedFill.Pattern?.Name == "LINK_BRICK_75"
+            && linkedSavedFill.Color.R == 92 && linkedSavedFill.Color.G == 61 && linkedSavedFill.Color.B == 43,
+            "Linked material appearance remap preserves the native Revit hatch");
+        check(linkedEntities.OfType<Line>().Count(line => line.Layer.Name == "A-LINK-BRICK") == 4
+            && linkedEntities.OfType<Line>().Count(line => line.Layer.Name == "A-LINK-TYPE") == 1
+            && linkedResponse.LinkedMaterialFillsRemapped == 1 && linkedResponse.LinkedMaterialBoundariesRemapped == 4,
+            "Linked material hatch owns its four exact boundaries while unrelated geometry keeps the linked type rule");
     }
 }

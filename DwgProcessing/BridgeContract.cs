@@ -15,6 +15,7 @@ namespace ChangExport.DwgProcessing
         public bool RevitSheet { get; set; }
         public bool UseLayerColors { get; set; }
         public List<ColorLayerRemap> ColorRemaps { get; set; } = new();
+        public List<MaterialAppearanceRemap> MaterialAppearanceRemaps { get; set; } = new();
         public Dictionary<string, string> TextReplacements { get; set; } = new();
         public Dictionary<string, int> ExpectedRuleMatches { get; set; } = new();
         public List<WideLineLayer> WideLineLayers { get; set; } = new();
@@ -72,6 +73,32 @@ namespace ChangExport.DwgProcessing
         public int BoundaryPriority { get; set; }
     }
 
+    /// <summary>
+    /// Matches the native DWG appearance of a material that belongs to a linked
+    /// Revit document. Linked elements cannot receive host-side element overrides
+    /// or Parts, so an unambiguous hatch signature is consumed after xrefs bind.
+    /// </summary>
+    public sealed class MaterialAppearanceRemap
+    {
+        public string Pattern { get; set; } = "";
+        public bool IsSolid { get; set; }
+        public int DisplayRgb { get; set; }
+        public string Layer { get; set; } = "";
+        public int Color { get; set; }
+        public string RuleId { get; set; } = "";
+        public string MaterialName { get; set; } = "";
+        public int BoundaryPriority { get; set; }
+        public bool AllowColorOnly { get; set; }
+        public List<MaterialPatternLine> PatternLines { get; set; } = new();
+    }
+
+    public sealed class MaterialPatternLine
+    {
+        public double SpacingMm { get; set; }
+        public double ShiftMm { get; set; }
+        public List<double> SegmentsMm { get; set; } = new();
+    }
+
     public sealed class LayerAppearance
     {
         public string Layer { get; set; } = "";
@@ -101,6 +128,8 @@ namespace ChangExport.DwgProcessing
         public int PreservedFillColors { get; set; }
         public int PreservedMaskingEntities { get; set; }
         public int MaterialBoundaryDuplicatesRemoved { get; set; }
+        public int LinkedMaterialFillsRemapped { get; set; }
+        public int LinkedMaterialBoundariesRemapped { get; set; }
         public int FilterContainerMarkersIgnored { get; set; }
         public int FilterLowerGraphicsSkipped { get; set; }
         public int ExcludedEntities { get; set; }

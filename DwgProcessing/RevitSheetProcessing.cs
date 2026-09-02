@@ -193,7 +193,7 @@ public sealed partial class ManagedDwgProcessor
 
     private static CadDocument ApplyCustomRemaps(CadDocument document, BridgeRequest request, BridgeResponse response, GeometryContext? geometry = null)
     {
-        if (request.ColorRemaps.Count == 0 && request.TextReplacements.Count == 0)
+        if (request.ColorRemaps.Count == 0 && request.MaterialAppearanceRemaps.Count == 0 && request.TextReplacements.Count == 0)
         {
             foreach (var entity in document.Entities) CaptureWidths(entity, geometry);
             return document;
@@ -203,6 +203,7 @@ public sealed partial class ManagedDwgProcessor
         var mappings = request.ColorRemaps.ToDictionary(m => m.MarkerAci);
         var counts = mappings.Keys.ToDictionary(k => k, _ => 0);
         var materialBoundaries = new Dictionary<Entity, int>();
+        var appearanceCounts = request.MaterialAppearanceRemaps.ToDictionary(map => map, _ => 0);
         var byRgb = request.ColorRemaps.ToDictionary(m => ColorRgb(new ACadSharp.Color((short)m.MarkerAci)));
         ColorLayerRemap? Marker(ACadSharp.Color color) => !color.IsByBlock && !color.IsByLayer
             && byRgb.TryGetValue(ColorRgb(color), out var map) ? map : null;
@@ -224,7 +225,7 @@ public sealed partial class ManagedDwgProcessor
         }
         static string? BoundarySignature(Entity entity)
         {
-            static string Number(double value) => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            static string Number(double value) => Math.Round(value, 7).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
             static string Point(XYZ point) => $"{Number(point.X)},{Number(point.Y)},{Number(point.Z)}";
             if (entity is Line line)
             {
@@ -248,6 +249,98 @@ public sealed partial class ManagedDwgProcessor
                 return $"P|{polyline.IsClosed}|{Number(polyline.Elevation)}|{points}";
             }
             return null;
+        }
+        static string SegmentSignature(XYZ start, XYZ end)
+        {
+            static string Number(double value) => Math.Round(value, 7).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            static string Point(XYZ point) => $"{Number(point.X)},{Number(point.Y)},{Number(point.Z)}";
+            string a = Point(start), b = Point(end);
+            return string.CompareOrdinal(a, b) <= 0 ? $"L|{a}|{b}" : $"L|{b}|{a}";
+        }
+        static IEnumerable<string> HatchBoundarySignatures(Hatch hatch)
+        {
+            foreach (var edge in hatch.Paths.SelectMany(path => path.Edges))
+            {
+                if (edge is Hatch.BoundaryPath.Line line)
+                    yield return SegmentSignature(new XYZ(line.Start.X, line.Start.Y, 0), new XYZ(line.End.X, line.End.Y, 0));
+                else if (edge is Hatch.BoundaryPath.Polyline polyline)
+                {
+                    var vertices = polyline.Vertices.ToList();
+                    for (int i = 1; i < vertices.Count; i++)
+                        yield return SegmentSignature(new XYZ(vertices[i - 1].X, vertices[i - 1].Y, 0), new XYZ(vertices[i].X, vertices[i].Y, 0));
+                    if (polyline.IsClosed && vertices.Count > 2)
+                        yield return SegmentSignature(new XYZ(vertices[^1].X, vertices[^1].Y, 0), new XYZ(vertices[0].X, vertices[0].Y, 0));
+                }
+            }
+        }
+        MaterialAppearanceRemap? Appearance(Hatch hatch)
+        {
+            ACadSharp.Color color = hatch.Color.IsByLayer ? hatch.Layer.Color : hatch.Color;
+            if (color.IsByBlock || color.IsByLayer) return null;
+            int rgb = ColorRgb(color);
+            var candidates = request.MaterialAppearanceRemaps.Where(map => map.IsSolid == hatch.IsSolid && map.DisplayRgb == rgb).ToList();
+            if (hatch.IsSolid) return candidates.Count == 1 ? candidates[0] : null;
+            var geometryMatches = candidates.Where(map => PatternMatches(hatch, map, response.ModelScale)).ToList();
+            if (geometryMatches.Count == 1) return geometryMatches[0];
+            var colorOnly = candidates.Where(map => map.AllowColorOnly).ToList();
+            return colorOnly.Count == 1 ? colorOnly[0] : null;
+        }
+        static bool PatternMatches(Hatch hatch, MaterialAppearanceRemap map, double modelScale)
+        {
+            if (hatch.Pattern == null || map.PatternLines.Count == 0 || hatch.Pattern.Lines.Count != map.PatternLines.Count) return false;
+            // ACadSharp exposes hatch pattern line offsets/dashes after the DXF
+            // pattern scale has already been applied. Only the sheet-to-model
+            // conversion remains here.
+            double scale = Math.Abs(modelScale);
+            static bool Near(double left, double right)
+                => Math.Abs(left - right) <= Math.Max(.15, Math.Max(Math.Abs(left), Math.Abs(right)) * .02);
+            var native = hatch.Pattern.Lines.Select(line =>
+            {
+                double dx = line.Offset.X - line.BasePoint.X, dy = line.Offset.Y - line.BasePoint.Y;
+                double spacing = Math.Abs(-Math.Sin(line.Angle) * dx + Math.Cos(line.Angle) * dy) * scale;
+                double shift = Math.Abs(Math.Cos(line.Angle) * dx + Math.Sin(line.Angle) * dy) * scale;
+                return new MaterialPatternLine { SpacingMm = spacing, ShiftMm = shift,
+                    SegmentsMm = line.DashLengths.Select(value => value * scale).ToList() };
+            }).OrderBy(line => line.SpacingMm).ThenBy(line => line.ShiftMm)
+                .ThenBy(line => string.Join(",", line.SegmentsMm.Select(value => Math.Round(value, 3)))).ToList();
+            var expected = map.PatternLines.OrderBy(line => line.SpacingMm).ThenBy(line => line.ShiftMm)
+                .ThenBy(line => string.Join(",", line.SegmentsMm.Select(value => Math.Round(value, 3)))).ToList();
+            for (int i = 0; i < native.Count; i++)
+            {
+                if (!Near(native[i].SpacingMm, expected[i].SpacingMm) || !Near(native[i].ShiftMm, expected[i].ShiftMm)
+                    || native[i].SegmentsMm.Count != expected[i].SegmentsMm.Count) return false;
+                for (int segment = 0; segment < native[i].SegmentsMm.Count; segment++)
+                    if (!Near(native[i].SegmentsMm[segment], expected[i].SegmentsMm[segment])) return false;
+            }
+            return true;
+        }
+        void ApplyLinkedMaterialAppearances(BlockRecord block)
+        {
+            if (request.MaterialAppearanceRemaps.Count == 0) return;
+            var boundaryMaps = new Dictionary<string, MaterialAppearanceRemap>(StringComparer.Ordinal);
+            foreach (Hatch hatch in block.Entities.OfType<Hatch>())
+            {
+                MaterialAppearanceRemap? map = Appearance(hatch);
+                if (map == null) continue;
+                if (!rewritten.Layers.TryGetValue(map.Layer, out Layer layer))
+                { layer = (Layer)hatch.Layer.Clone(); layer.Name = map.Layer; layer.Color = new ACadSharp.Color((short)map.Color); rewritten.Layers.Add(layer); }
+                layer.Color = new ACadSharp.Color((short)map.Color);
+                hatch.Layer = layer;
+                response.LinkedMaterialFillsRemapped++;
+                appearanceCounts[map]++;
+                foreach (string signature in HatchBoundarySignatures(hatch))
+                    if (!boundaryMaps.TryGetValue(signature, out var existing) || map.BoundaryPriority > existing.BoundaryPriority)
+                        boundaryMaps[signature] = map;
+            }
+            foreach (Entity entity in block.Entities.Where(entity => entity is Line or Arc or Circle or LwPolyline))
+            {
+                string? signature = BoundarySignature(entity);
+                if (signature == null || !boundaryMaps.TryGetValue(signature, out var map)) continue;
+                if (!rewritten.Layers.TryGetValue(map.Layer, out Layer layer)) continue;
+                entity.Layer = layer; entity.Color = ACadSharp.Color.ByLayer;
+                materialBoundaries[entity] = map.BoundaryPriority;
+                response.LinkedMaterialBoundariesRemapped++;
+            }
         }
         void RemoveDuplicateMaterialBoundaries(BlockRecord block)
         {
@@ -294,6 +387,7 @@ public sealed partial class ManagedDwgProcessor
                 // share a nested family block; never recolor their shared definition in place.
                 block.Name = "CE_FILTER_" + ++blockIndex + "_" + block.Name.TrimStart('*');
                 foreach (Entity child in block.Entities) Visit(child, map, visited);
+                ApplyLinkedMaterialAppearances(block);
                 RemoveDuplicateMaterialBoundaries(block);
             }
         }
@@ -301,6 +395,7 @@ public sealed partial class ManagedDwgProcessor
         {
             var clone = (Entity)source.Clone(); CaptureWidths(clone, geometry); Visit(clone, null, new HashSet<BlockRecord>()); rewritten.Entities.Add(clone);
         }
+        ApplyLinkedMaterialAppearances(rewritten.ModelSpace);
         RemoveDuplicateMaterialBoundaries(rewritten.ModelSpace);
         PreserveMaskDrawOrder(rewritten.ModelSpace, rewritten.ModelSpace.GetSortedEntities().ToArray());
         if (response.FilterLowerGraphicsSkipped > 0)
@@ -309,7 +404,12 @@ public sealed partial class ManagedDwgProcessor
             response.Warnings.Add($"복합재료 공유 경계: 기능 우선순위에 따라 중복선 {response.MaterialBoundaryDuplicatesRemoved:N0}개를 정리했습니다.");
         foreach (var map in request.ColorRemaps)
             response.Warnings.Add($"필터 레이어 '{map.Layer}' / ACI {map.Color} · DWG 객체 {counts[map.MarkerAci]:N0}개 반영");
+        if (response.LinkedMaterialFillsRemapped > 0)
+            response.Warnings.Add($"링크 재료 필터: 해치 {response.LinkedMaterialFillsRemapped:N0}개와 경계 {response.LinkedMaterialBoundariesRemapped:N0}개를 정확한 표시 서명으로 반영했습니다.");
         response.CustomRuleEntityCounts = request.ColorRemaps.GroupBy(m => m.RuleId).ToDictionary(g => g.Key, g => g.Sum(m => counts[m.MarkerAci]));
+        foreach (var group in request.MaterialAppearanceRemaps.GroupBy(m => m.RuleId))
+            response.CustomRuleEntityCounts[group.Key] = response.CustomRuleEntityCounts.GetValueOrDefault(group.Key)
+                + group.Sum(map => appearanceCounts[map]);
         foreach (var expected in request.ExpectedRuleMatches.Where(p => p.Value > 0))
             if (!response.CustomRuleEntityCounts.TryGetValue(expected.Key, out int count) || count == 0)
                 response.Warnings.Add($"필터 미반영 확인 필요: 규칙 {expected.Key}는 Revit 객체 {expected.Value}개와 일치했지만 DWG 식별색 객체가 없습니다. 가림·생략 뷰·출력 색상 설정을 확인하세요.");
