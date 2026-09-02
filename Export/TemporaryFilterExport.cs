@@ -99,6 +99,46 @@ internal static class TemporaryFilterExport
             var sourceId = part.GetSourceElementIds().FirstOrDefault();
             return sourceId?.HostElementId ?? ElementId.InvalidElementId;
         }
+        bool HasVisibleWrapping(Element element)
+        {
+            if (element is not Wall wall || document.GetElement(element.GetTypeId()) is not HostObjAttributes type
+                || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure
+                || !Enumerable.Range(0, structure.LayerCount).Any(structure.ParticipatesInWrapping)) return false;
+            try
+            {
+                return wall.GetValidWrappingLocationIndices().Any(wall.IsWrappingAtLocationAllowed);
+            }
+            catch (Autodesk.Revit.Exceptions.ArgumentException) { return false; }
+            catch (Autodesk.Revit.Exceptions.InvalidOperationException) { return false; }
+        }
+        (Color Projection, Color Cut, string Match)? WrappingSupport(Element element)
+        {
+            if (document.GetElement(element.GetTypeId()) is not HostObjAttributes type
+                || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure) return null;
+            var layers = structure.GetLayers();
+            var selected = Enumerable.Range(0, layers.Count)
+                .Where(structure.ParticipatesInWrapping)
+                .Select(index => (Layer: layers[index], Rule: materialIndex.GetValueOrDefault(layers[index].MaterialId)))
+                .Where(item => item.Rule != null)
+                .OrderByDescending(item => FunctionPriority((int)item.Layer.Function))
+                .FirstOrDefault();
+            if (selected.Rule is { } material)
+            {
+                string match = "wrap:" + material.RuleId;
+                var marker = Register(match, material.Layer, material.Color, material.Layer, material.Color,
+                    match, false, 1);
+                return (marker.Projection, marker.Cut, match);
+            }
+            RevitLayerRow? row = TypeRule(element) ?? rows.FirstOrDefault(candidate => !candidate.IsCustom
+                && candidate.CategoryId == element.Category?.Id.Value && candidate.SubcategoryId == null && candidate.SpecialType == -1)
+                ?? rows.FirstOrDefault(candidate => !candidate.IsCustom && candidate.Category == element.Category?.Name
+                    && candidate.Subcategory.Length == 0 && candidate.SpecialType == -1);
+            if (row == null) return null;
+            string fallback = "wrap-category:" + (row.CategoryId?.ToString() ?? row.Category);
+            var categoryMarker = Register(fallback, row.Layer, row.Color, row.CutLayer, row.CutColor,
+                fallback, false, 1);
+            return (categoryMarker.Projection, categoryMarker.Cut, fallback);
+        }
         using var group = new TransactionGroup(document, "창Export 임시 필터 출력 (복구)");
         if (group.Start() != TransactionStatus.Started) throw new InvalidOperationException("임시 출력 트랜잭션을 시작할 수 없습니다.");
         var temporaryIds = new List<ElementId>();
@@ -148,6 +188,8 @@ internal static class TemporaryFilterExport
                 }
                 var partSources = new HashSet<ElementId>();
                 var viewsWithMaterialParts = new HashSet<ElementId>();
+                var sourcesByView = new Dictionary<ElementId, HashSet<ElementId>>();
+                var wrappingByView = new Dictionary<ElementId, HashSet<ElementId>>();
                 if (materialIndex.Count > 0)
                 foreach (View view in usableViews)
                 foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
@@ -155,6 +197,9 @@ internal static class TemporaryFilterExport
                     if (element is ImportInstance or Part || !IsLayeredWallOrFloor(element)) continue;
                     var ids = CompoundMaterials(element);
                     if (!ids.Any(materialIndex.ContainsKey)) continue;
+                    sourcesByView.TryAdd(view.Id, new()); sourcesByView[view.Id].Add(element.Id);
+                    if (HasVisibleWrapping(element))
+                    { wrappingByView.TryAdd(view.Id, new()); wrappingByView[view.Id].Add(element.Id); }
                     if (PartUtils.HasAssociatedParts(document, element.Id))
                     {
                         viewsWithMaterialParts.Add(view.Id);
@@ -178,13 +223,27 @@ internal static class TemporaryFilterExport
                         temporaryIds.AddRange(PartUtils.GetAssociatedParts(document, sourceId, false, true));
                 }
                 foreach (View view in usableViews.Where(v => v is not ViewSheet && viewsWithMaterialParts.Contains(v.Id)))
-                    view.PartsVisibility = PartsVisibility.ShowPartsOnly;
+                {
+                    var wrapped = wrappingByView.GetValueOrDefault(view.Id);
+                    if (wrapped is not { Count: > 0 }) { view.PartsVisibility = PartsVisibility.ShowPartsOnly; continue; }
+                    view.PartsVisibility = PartsVisibility.ShowPartsAndOriginal;
+                    var hidden = sourcesByView.GetValueOrDefault(view.Id)?.Where(id => !wrapped.Contains(id)
+                        && document.GetElement(id) is { } source && !source.IsHidden(view) && source.CanBeHidden(view)).ToList() ?? new();
+                    if (hidden.Count > 0) view.HideElements(hidden);
+                }
                 document.Regenerate();
                 foreach (View view in usableViews)
                 foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
                 {
                     if (element is ImportInstance || element.Category == null) continue;
                     MaterialLayerRule? materialRule = null; int priority = 100; Element sourceElement = element;
+                    bool suppressHostFills = false;
+                    (Color Projection, Color Cut, string Match)? support = null;
+                    if (element is not Part && wrappingByView.GetValueOrDefault(view.Id)?.Contains(element.Id) == true)
+                    {
+                        support = WrappingSupport(element);
+                        suppressHostFills = support != null;
+                    }
                     if (element is Part part)
                     {
                         ElementId sourceId = PartSource(part);
@@ -198,7 +257,12 @@ internal static class TemporaryFilterExport
                     }
                     (Color Projection, Color Cut) marker;
                     string matchedRule;
-                    if (materialRule != null)
+                    bool countMatch = true;
+                    if (support is { } host)
+                    {
+                        marker = (host.Projection, host.Cut); matchedRule = host.Match; countMatch = false;
+                    }
+                    else if (materialRule != null)
                     {
                         marker = Register($"material:{materialRule.RuleId}:{priority}", materialRule.Layer, materialRule.Color,
                             materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
@@ -213,8 +277,15 @@ internal static class TemporaryFilterExport
                     // Only line colors carry private filter markers. Fill appearance stays
                     // exactly as displayed by Revit and the managed stage changes its layer only.
                     settings.SetProjectionLineColor(marker.Projection).SetCutLineColor(marker.Cut);
-                    view.SetElementOverrides(element.Id, settings); result.MatchedElements[matchedRule]++;
+                    if (suppressHostFills)
+                        settings.SetSurfaceForegroundPatternVisible(false).SetSurfaceBackgroundPatternVisible(false)
+                            .SetCutForegroundPatternVisible(false).SetCutBackgroundPatternVisible(false);
+                    view.SetElementOverrides(element.Id, settings);
+                    if (countMatch) result.MatchedElements[matchedRule]++;
                 }
+                int wrappingHosts = wrappingByView.Values.SelectMany(ids => ids).Distinct().Count();
+                if (wrappingHosts > 0)
+                    warnings.Add($"끝단 마감 보존: 복합 벽 {wrappingHosts:N0}개는 원본 돌림마감 선형을 재료 Part와 함께 출력하고 중복 경계는 Part를 우선합니다.");
                 if (transaction.Commit() != TransactionStatus.Committed) throw new InvalidOperationException("임시 필터 적용에 실패했습니다.");
             }
             if (result.MatchedElements.Values.Sum() == 0)
