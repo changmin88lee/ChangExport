@@ -445,13 +445,14 @@ public sealed partial class ManagedDwgProcessor
         if (request.Direction is not ("Horizontal" or "Vertical") || !double.IsFinite(request.MarginMm) || request.MarginMm < 0)
             throw new InvalidDataException("배치 방향 또는 간격이 올바르지 않습니다.");
         CadDocument? target = null;
+        var hatchPatterns = new Dictionary<string, HatchPatternState>(StringComparer.OrdinalIgnoreCase);
         double cursor = 0;
         for (int n = 0; n < request.Inputs.Count; n++)
         {
             check();
             CadDocument source = prepared == null ? Read(request.Inputs[n], response.Warnings) : prepared[n].Document;
             RemoveExcludedGeometry(source, request.ExcludedLayers, response);
-            if (request.RevitSheet && target != null) IsolateConflictingStyles(source, target, n + 1, response.Warnings);
+            if (request.RevitSheet) IsolateConflictingStyles(source, target, n + 1, hatchPatterns, response.Warnings);
             if (source.Header.InsUnits != UnitsType.Millimeters || source.Layouts.Where(l => l.IsPaperSpace).Any(l => l.AssociatedBlock.Entities.Any(e => e is not Viewport)))
                 throw new InvalidDataException("병합 입력은 mm 단위의 모형공간 시트여야 합니다.");
             if (target == null) target = CreateOutput(source);

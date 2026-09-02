@@ -4,6 +4,9 @@ using ACadSharp.Entities;
 using ACadSharp.Objects;
 using ACadSharp.Tables;
 using CSMath;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace ChangExport.DwgProcessing;
 
@@ -152,8 +155,87 @@ public sealed partial class ManagedDwgProcessor
         foreach (Entity child in block.Entities) RenameReferenceBlocks(child, prefix, seen);
     }
 
-    private static void IsolateConflictingStyles(CadDocument source, CadDocument target, int sheet, List<string> warnings)
+    private sealed class HatchPatternState
     {
+        public string OriginalName { get; }
+        public Dictionary<string, string> ResolvedNames { get; } = new(StringComparer.Ordinal);
+        public int ReportedDefinitionCount { get; set; }
+
+        public HatchPatternState(string originalName) => OriginalName = originalName;
+    }
+
+    private static IEnumerable<Hatch> PatternedHatches(CadDocument document) =>
+        document.BlockRecords.SelectMany(block => block.Entities).OfType<Hatch>()
+            .Where(hatch => !hatch.IsSolid && hatch.Pattern != null && !string.IsNullOrWhiteSpace(hatch.Pattern.Name));
+
+    private static string HatchPatternSignature(HatchPattern pattern)
+    {
+        static string Number(double value)
+        {
+            if (Math.Abs(value) < Epsilon) value = 0;
+            return Math.Round(value, 8, MidpointRounding.AwayFromZero).ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        var signature = new StringBuilder();
+        signature.Append(pattern.Lines.Count).Append('|');
+        foreach (HatchPattern.Line line in pattern.Lines)
+        {
+            signature.Append(Number(line.Angle)).Append('|')
+                .Append(Number(line.BasePoint.X)).Append(',').Append(Number(line.BasePoint.Y)).Append('|')
+                .Append(Number(line.Offset.X)).Append(',').Append(Number(line.Offset.Y)).Append('|')
+                .Append(line.DashLengths.Count).Append(':');
+            foreach (double dash in line.DashLengths) signature.Append(Number(dash)).Append(',');
+            signature.Append(';');
+        }
+        return signature.ToString();
+    }
+
+    private static string ResolvedHatchPatternName(string original, string signature)
+    {
+        string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(signature)))[..16];
+        return original + "__CE_" + hash;
+    }
+
+    private static void ApplyResolvedHatchPatternNames(CadDocument document, HatchPatternState state)
+    {
+        foreach (Hatch hatch in PatternedHatches(document))
+        {
+            string current = hatch.Pattern!.Name;
+            if (!current.Equals(state.OriginalName, StringComparison.OrdinalIgnoreCase)
+                && !state.ResolvedNames.Values.Contains(current, StringComparer.OrdinalIgnoreCase)) continue;
+            string signature = HatchPatternSignature(hatch.Pattern);
+            if (state.ResolvedNames.TryGetValue(signature, out string? resolved)) hatch.Pattern.Name = resolved;
+        }
+    }
+
+    private static void IsolateConflictingHatchPatterns(CadDocument source, CadDocument? target, int sheet,
+        Dictionary<string, HatchPatternState> states, List<string> warnings)
+    {
+        foreach (var patterns in PatternedHatches(source).GroupBy(hatch => hatch.Pattern!.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!states.TryGetValue(patterns.Key, out HatchPatternState? state))
+            {
+                state = new HatchPatternState(patterns.First().Pattern!.Name);
+                states.Add(state.OriginalName, state);
+            }
+            foreach (string signature in patterns.Select(hatch => HatchPatternSignature(hatch.Pattern!)).Distinct(StringComparer.Ordinal))
+                state.ResolvedNames.TryAdd(signature, ResolvedHatchPatternName(state.OriginalName, signature));
+
+            if (state.ResolvedNames.Count <= 1) continue;
+            if (target != null) ApplyResolvedHatchPatternNames(target, state);
+            ApplyResolvedHatchPatternNames(source, state);
+            if (state.ReportedDefinitionCount >= state.ResolvedNames.Count) continue;
+            warnings.Add($"해치 패턴 보존: 시트 {sheet}에서 '{state.OriginalName}' 이름의 서로 다른 정의 {state.ResolvedNames.Count:N0}개를 "
+                + string.Join(", ", state.ResolvedNames.Values.Select(name => $"'{name}'")) + "으로 분리했습니다.");
+            state.ReportedDefinitionCount = state.ResolvedNames.Count;
+        }
+    }
+
+    private static void IsolateConflictingStyles(CadDocument source, CadDocument? target, int sheet,
+        Dictionary<string, HatchPatternState> hatchPatterns, List<string> warnings)
+    {
+        IsolateConflictingHatchPatterns(source, target, sheet, hatchPatterns, warnings);
+        if (target == null) return;
         foreach (LineType type in source.LineTypes.ToArray())
         {
             if (!target.LineTypes.TryGetValue(type.Name, out LineType other)

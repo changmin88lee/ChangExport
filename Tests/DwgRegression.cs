@@ -103,6 +103,28 @@ internal static class DwgRegression
         try { processor.Run(new BridgeRequest { Operation = "Merge", Inputs = new() { first, conflict },
             OutputPath = Path.Combine(output, "conflict-merge.dwg") }, first, output); } catch (InvalidDataException e) when (e.Message.Contains("레이어 설정")) { conflictRejected = true; }
         check(conflictRejected && !File.Exists(Path.Combine(output, "conflict-merge.dwg")), "Conflicting same-name layers cannot silently change colors");
+
+        CadDocument PatternedSheet(double spacing)
+        {
+            var patterned = Sheet();
+            var fill = patterned.Entities.OfType<Hatch>().Single();
+            fill.IsSolid = false; fill.PatternType = HatchPatternType.Custom;
+            fill.Pattern = new HatchPattern("FP1_COLLISION");
+            fill.Pattern.Lines.Add(new HatchPattern.Line { Angle = 0, BasePoint = XY.Zero, Offset = new XY(0, spacing) });
+            return patterned;
+        }
+        string hatchA = Flatten(PatternedSheet(240), "hatch-pattern-240");
+        string hatchB = Flatten(PatternedSheet(2000), "hatch-pattern-2000");
+        string hatchMerge = Path.Combine(output, "hatch-pattern-conflict-merge.dwg");
+        var hatchResult = processor.Run(new BridgeRequest { Operation = "Merge", RevitSheet = true,
+            Inputs = new() { hatchA, hatchB }, OutputPath = hatchMerge }, hatchA, output);
+        var mergedPatterns = DwgReader.Read(hatchMerge).BlockRecords.SelectMany(block => block.Entities).OfType<Hatch>()
+            .Where(hatch => hatch.Pattern?.Name.StartsWith("FP1_COLLISION__CE_", StringComparison.Ordinal) == true).ToArray();
+        check(mergedPatterns.Select(hatch => hatch.Pattern!.Name).Distinct().Count() == 2
+            && mergedPatterns.Select(hatch => hatch.Pattern!.Lines.Single().Offset.Y).OrderBy(value => value).SequenceEqual(new[] { 240d, 2000d }),
+            "Same-name hatch definitions receive stable distinct names and retain their line spacing");
+        check(hatchResult.Warnings.Any(warning => warning.Contains("해치 패턴 보존") && warning.Contains("FP1_COLLISION")),
+            "Hatch-pattern isolation is reported in the export diagnostics");
         foreach (var version in new[] { ACadVersion.AC1015, ACadVersion.AC1018 })
             Reject(Sheet(version), "legacy-" + version, "2010 이상");
         foreach (var version in new[] { ACadVersion.AC1024, ACadVersion.AC1027 })
