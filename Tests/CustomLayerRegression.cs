@@ -78,8 +78,10 @@ internal static class CustomLayerRegression
             Layer = native, Color = new ACadSharp.Color(204) };
         var wrappedEnd = new Line { StartPoint = new XYZ(100, 50, 0), EndPoint = new XYZ(115, 50, 0),
             Layer = native, Color = new ACadSharp.Color(204) };
+        var airOverWrappedEnd = new Line { StartPoint = new XYZ(105, 50, 0), EndPoint = new XYZ(110, 50, 0),
+            Layer = native, Color = new ACadSharp.Color(205) };
         materials.Entities.Add(finishBoundary); materials.Entities.Add(structureBoundary);
-        materials.Entities.Add(hostBoundary); materials.Entities.Add(wrappedEnd);
+        materials.Entities.Add(hostBoundary); materials.Entities.Add(wrappedEnd); materials.Entities.Add(airOverWrappedEnd);
         materials.Entities.Add(new Line { StartPoint = new XYZ(120, 0, 0), EndPoint = new XYZ(120, 50, 0),
             Layer = native, LineType = beyond, Color = new ACadSharp.Color(202) });
         var materialBlock = new BlockRecord("MATERIAL_PART");
@@ -103,7 +105,8 @@ internal static class CustomLayerRegression
             {
                 new() { MarkerAci = 202, Layer = "A-FINISH", Color = 30, RuleId = "finish", RemapFills = true, BoundaryPriority = 700 },
                 new() { MarkerAci = 203, Layer = "A-STRUCTURE", Color = 8, RuleId = "structure", RemapFills = true, BoundaryPriority = 500 },
-                new() { MarkerAci = 204, Layer = "A-FINISH", Color = 30, RuleId = "wrap:finish", BoundaryPriority = 1 }
+                new() { MarkerAci = 204, Layer = "A-FINISH", Color = 30, RuleId = "wrap:finish", BoundaryPriority = 1 },
+                new() { MarkerAci = 205, Layer = "A-AIR", Color = 254, RuleId = "air", RemapFills = true, BoundaryPriority = 100 }
             } }, materialInput, output);
         var materialSaved = DwgReader.Read(materialOutput);
         var materialEntities = materialSaved.BlockRecords.SelectMany(record => record.Entities).ToArray();
@@ -116,11 +119,13 @@ internal static class CustomLayerRegression
                 && line.Layer.Name == "A-FINISH") == 1
             && !materialEntities.OfType<Line>().Any(line => line.StartPoint.X == 100 && line.EndPoint.X == 100
                 && line.Layer.Name == "A-STRUCTURE")
-            && materialResponse.MaterialBoundaryDuplicatesRemoved == 2,
-            "Shared compound boundary keeps the material Part ahead of Structure and host support");
+            && materialResponse.MaterialBoundaryDuplicatesRemoved == 3,
+            "Shared compound boundary removes exact and partial overlaps");
         check(materialEntities.OfType<Line>().Count(line => line.StartPoint.Y == 50 && line.EndPoint.Y == 50
-                && line.Layer.Name == "A-FINISH") == 1,
-            "Host-only wrapped end boundary remains on the wrapping material layer");
+                && line.Layer.Name == "A-FINISH") == 1
+            && !materialEntities.OfType<Line>().Any(line => line.StartPoint.Y == 50 && line.EndPoint.Y == 50
+                && line.Layer.Name == "A-AIR"),
+            "Host wrapped end outranks a partially overlapping air Part boundary");
         check(materialEntities.OfType<Line>().Any(line => line.StartPoint.X == 120 && line.Layer.Name == "NATIVE-MATERIAL")
             && materialResponse.FilterLowerGraphicsSkipped == 1,
             "Beyond lower graphic is excluded from type/material remapping");

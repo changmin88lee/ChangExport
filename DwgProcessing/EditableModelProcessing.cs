@@ -234,10 +234,40 @@ public sealed partial class ManagedDwgProcessor
         if (entity is Hatch hatch)
         {
             var edges = hatch.Paths.Select(p => p.Edges.Select(e => e.Clone()).ToList()).ToList();
+            var patternLines = hatch.Pattern?.Lines.Select(line => new
+            {
+                line.Angle,
+                line.BasePoint,
+                line.Offset,
+                DashLengths = line.DashLengths.ToList()
+            }).ToList();
             // Solid boundaries can be expressed directly in the final XY plane,
             // including Revit's mirrored blocks with a -Z extrusion normal.
             var edgeTransform = hatch.IsSolid ? new Transform(transform.Matrix * Matrix4.GetArbitraryAxis(hatch.Normal)) : transform;
             hatch.ApplyTransform(transform);
+            // ACadSharp 3.7.1 applies translation to HatchPattern.Line.Offset as
+            // though it were a point. Offset is a repeat vector: translating it
+            // makes ordinary Revit fills repeat tens of metres apart after a
+            // viewport is flattened. Rebuild every patterned line from its
+            // original point/vector semantics.
+            if (!hatch.IsSolid && patternLines != null && hatch.Pattern != null
+                && hatch.Pattern.Lines.Count == patternLines.Count)
+            {
+                for (int lineIndex = 0; lineIndex < patternLines.Count; lineIndex++)
+                {
+                    var original = patternLines[lineIndex];
+                    var line = hatch.Pattern.Lines[lineIndex];
+                    XYZ basePoint = transform.ApplyTransform(new XYZ(original.BasePoint.X, original.BasePoint.Y, 0));
+                    XYZ offset = Vector(transform, new XYZ(original.Offset.X, original.Offset.Y, 0));
+                    XYZ direction = Vector(transform, new XYZ(Math.Cos(original.Angle), Math.Sin(original.Angle), 0));
+                    double dashScale = direction.GetLength();
+                    line.BasePoint = new XY(basePoint.X, basePoint.Y);
+                    line.Offset = new XY(offset.X, offset.Y);
+                    line.Angle = Math.Atan2(direction.Y, direction.X);
+                    line.DashLengths.Clear();
+                    line.DashLengths.AddRange(original.DashLengths.Select(length => length * dashScale));
+                }
+            }
             if (hatch.IsSolid) hatch.Normal = XYZ.AxisZ;
             hatch.IsAssociative = false;
             transform = edgeTransform;

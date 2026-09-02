@@ -158,6 +158,8 @@ public sealed class RevitDwgExportService
                                 input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList();
                                 request.TextReplacements = new(filtered.TextReplacements);
                                 item.TimingsMs[$"{sheetLabel}:filter"] = filterClock.Elapsed.TotalMilliseconds;
+                                foreach (var timing in filtered.TimingsMs)
+                                    item.TimingsMs[$"{sheetLabel}:filter:{timing.Key}"] = timing.Value;
                                 request.ExpectedRuleMatches = new(filtered.MatchedElements);
                                 item.SheetDiagnostics.Add(new { sheet = sheet.SheetNumber, filterMatches = filtered.MatchedElements,
                                     filterRemaps = filtered.Remaps, linkedMaterialPartSources = filtered.LinkedMaterialPartSources });

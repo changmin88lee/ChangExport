@@ -1,6 +1,7 @@
 using Autodesk.Revit.DB;
 using ChangExport.DwgProcessing;
 using ChangExport.Models;
+using System.Diagnostics;
 using Color = Autodesk.Revit.DB.Color;
 using View = Autodesk.Revit.DB.View;
 
@@ -16,6 +17,7 @@ internal static class TemporaryFilterExport
         public int LinkedMaterialPartSources { get; set; }
         public Dictionary<string, string> TextReplacements { get; } = new();
         public Dictionary<string, int> MatchedElements { get; } = new();
+        public Dictionary<string, double> TimingsMs { get; } = new();
     }
 
     public static Result Export(Document document, ViewSheet source, DWGExportOptions options,
@@ -23,6 +25,7 @@ internal static class TemporaryFilterExport
         string baselineDirectory, string directory, List<string> warnings, Func<bool> cancel)
     {
         var result = new Result();
+        var phaseClock = Stopwatch.StartNew();
         if (options.PropOverrides == PropOverrideMode.ByLayer)
             throw new InvalidOperationException("출력 옵션이 객체 재지정을 제외하여 필터를 반영할 수 없습니다. 기본 도면 표현은 유지했습니다.");
         var rules = rows.Where(r => r.IsCustom).ToList();
@@ -68,6 +71,7 @@ internal static class TemporaryFilterExport
         }
         foreach (var rule in rules) Register("type:" + rule.RuleId, rule.Layer, rule.Color, rule.CutLayer, rule.CutColor, rule.RuleId, false, 0);
         foreach (var rule in materialRules) result.MatchedElements.TryAdd(rule.RuleId, 0);
+        result.TimingsMs["setup"] = phaseClock.Elapsed.TotalMilliseconds;
         static int FunctionPriority(int value) => (MaterialFunctionAssignment)value switch
         {
             MaterialFunctionAssignment.Finish1 => 700,
@@ -158,6 +162,7 @@ internal static class TemporaryFilterExport
         var temporaryIds = new List<ElementId>();
         try
         {
+            phaseClock.Restart();
             ElementId sheetId;
             using (var transaction = new Transaction(document, "창Export 복제 시트 필터"))
             {
@@ -200,8 +205,12 @@ internal static class TemporaryFilterExport
                     document.Regenerate();
                     usableViews.Add(view);
                 }
-                LinkedModelFilterSupport.ApplyTypeFilters(document, usableViews, rules,
+                result.TimingsMs["duplicateViews"] = phaseClock.Elapsed.TotalMilliseconds;
+                phaseClock.Restart();
+                HashSet<string> nativeTypeFilterRules = LinkedModelFilterSupport.ApplyTypeFilters(document, usableViews, rules,
                     rule => markers["type:" + rule.RuleId], temporaryIds, result.MatchedElements, warnings);
+                result.TimingsMs["typeFilters"] = phaseClock.Elapsed.TotalMilliseconds;
+                phaseClock.Restart();
                 var partSources = new HashSet<ElementId>();
                 var linkedPartSources = new Dictionary<(long LinkInstance, long LinkedElement), LinkElementId>();
                 var viewsWithMaterialParts = new HashSet<ElementId>();
@@ -313,6 +322,8 @@ internal static class TemporaryFilterExport
                     if (hidden.Count > 0) view.HideElements(hidden);
                 }
                 document.Regenerate();
+                result.TimingsMs["materialParts"] = phaseClock.Elapsed.TotalMilliseconds;
+                phaseClock.Restart();
                 foreach (View view in usableViews)
                 foreach (Element element in new FilteredElementCollector(document, view.Id).WhereElementIsNotElementType().ToElements())
                 {
@@ -369,6 +380,14 @@ internal static class TemporaryFilterExport
                     }
                     else if (TypeRule(sourceOwner, sourceElement) is { } typeRule)
                     {
+                        // A native view filter already carries this marker for ordinary
+                        // host/link objects. Retain per-element overrides only for Parts
+                        // and categories for which Revit could not create a view filter.
+                        if (element is not Part && nativeTypeFilterRules.Contains(typeRule.RuleId))
+                        {
+                            result.MatchedElements[typeRule.RuleId]++;
+                            continue;
+                        }
                         marker = markers["type:" + typeRule.RuleId]; matchedRule = typeRule.RuleId;
                     }
                     else continue;
@@ -384,8 +403,9 @@ internal static class TemporaryFilterExport
                 }
                 int wrappingHosts = wrappingByView.Values.SelectMany(ids => ids).Distinct().Count();
                 if (wrappingHosts > 0)
-                    warnings.Add($"끝단 마감 보존: 복합 벽 {wrappingHosts:N0}개는 원본 돌림마감 선형을 재료 Part와 함께 출력하고 중복 경계는 Part를 우선합니다.");
+                    warnings.Add($"끝단 마감 보존: 복합 벽 {wrappingHosts:N0}개는 원본 돌림마감 선형을 재료 Part와 함께 출력하고 겹친 끝단은 돌림마감 재료를 우선합니다.");
                 if (transaction.Commit() != TransactionStatus.Committed) throw new InvalidOperationException("임시 필터 적용에 실패했습니다.");
+                result.TimingsMs["elementOverrides"] = phaseClock.Elapsed.TotalMilliseconds;
             }
             if (result.MatchedElements.Values.Sum() == 0)
             {
@@ -395,12 +415,14 @@ internal static class TemporaryFilterExport
             }
             if (cancel()) throw new OperationCanceledException();
             Directory.CreateDirectory(directory);
+            phaseClock.Restart();
             using var filteredOptions = new DWGExportOptions(options);
             // Keep the selected override/color behavior for unmatched objects.
             if (!document.Export(directory, "sheet", new List<ElementId> { sheetId }, filteredOptions))
                 throw new IOException("필터 복제 시트의 DWG 생성에 실패했습니다.");
             result.Drawing = Path.Combine(directory, "sheet.dwg");
             if (!File.Exists(result.Drawing)) throw new IOException("필터 시트 DWG가 없습니다.");
+            result.TimingsMs["revitExport"] = phaseClock.Elapsed.TotalMilliseconds;
             foreach (var rule in rules)
                 warnings.Add($"필터 판정: {rule.Category} / 유형 이름 포함 '{rule.TypeNameContains}' · Revit 객체 {result.MatchedElements[rule.RuleId]:N0}개 (최종 DWG 반영 개수는 별도 기록)");
             foreach (var rule in materialRules)
@@ -408,6 +430,7 @@ internal static class TemporaryFilterExport
         }
         finally
         {
+            var rollbackClock = Stopwatch.StartNew();
             try
             {
                 if (group.GetStatus() == TransactionStatus.Started && group.RollBack() != TransactionStatus.RolledBack)
@@ -416,6 +439,7 @@ internal static class TemporaryFilterExport
                     throw new InvalidOperationException("임시 시트/뷰 잔존이 확인되었습니다.");
             }
             catch (Exception ex) { throw new TemporaryExportRestoreException("임시 출력 요소 복구 확인에 실패했습니다. 출력을 중단합니다.", ex); }
+            result.TimingsMs["rollback"] = rollbackClock.Elapsed.TotalMilliseconds;
         }
         return result;
     }

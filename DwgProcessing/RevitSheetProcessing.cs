@@ -284,7 +284,7 @@ public sealed partial class ManagedDwgProcessor
         int blockIndex = 0;
         var mappings = request.ColorRemaps.ToDictionary(m => m.MarkerAci);
         var counts = mappings.Keys.ToDictionary(k => k, _ => 0);
-        var materialBoundaries = new Dictionary<Entity, int>();
+        var materialBoundaries = new Dictionary<Entity, (int Priority, bool Wrapping)>();
         var appearanceCounts = request.MaterialAppearanceRemaps.ToDictionary(map => map, _ => 0);
         var byRgb = request.ColorRemaps.ToDictionary(m => ColorRgb(new ACadSharp.Color((short)m.MarkerAci)));
         ColorLayerRemap? Marker(ACadSharp.Color color) => !color.IsByBlock && !color.IsByLayer
@@ -420,19 +420,107 @@ public sealed partial class ManagedDwgProcessor
                 if (signature == null || !boundaryMaps.TryGetValue(signature, out var map)) continue;
                 if (!rewritten.Layers.TryGetValue(map.Layer, out Layer layer)) continue;
                 entity.Layer = layer; entity.Color = ACadSharp.Color.ByLayer;
-                materialBoundaries[entity] = map.BoundaryPriority;
+                materialBoundaries[entity] = (map.BoundaryPriority, false);
                 response.LinkedMaterialBoundariesRemapped++;
+            }
+        }
+        static int BoundaryRank((int Priority, bool Wrapping) owner)
+            => owner.Wrapping ? int.MaxValue : owner.Priority;
+        static string CollinearKey(Line line)
+        {
+            static string Number(double value) => Math.Round(value, 7).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            double dx = line.EndPoint.X - line.StartPoint.X, dy = line.EndPoint.Y - line.StartPoint.Y;
+            double length = Math.Sqrt(dx * dx + dy * dy);
+            if (length < Epsilon || Math.Abs(line.EndPoint.Z - line.StartPoint.Z) > 1e-7) return "";
+            double x = dx / length, y = dy / length;
+            if (x < -Epsilon || (Math.Abs(x) < Epsilon && y < 0)) { x = -x; y = -y; }
+            double offset = -y * line.StartPoint.X + x * line.StartPoint.Y;
+            return $"{Number(x)}|{Number(y)}|{Number(offset)}|{Number(line.StartPoint.Z)}";
+        }
+        static bool SameDisplay(Line left, Line right)
+            => left.Layer.Name.Equals(right.Layer.Name, StringComparison.OrdinalIgnoreCase)
+                && left.Color.ToString() == right.Color.ToString()
+                && left.LineType.Name.Equals(right.LineType.Name, StringComparison.OrdinalIgnoreCase)
+                && left.LineWeight == right.LineWeight;
+        void ReconcileOverlappingMaterialLines(BlockRecord block)
+        {
+            const double tolerance = 1e-7;
+            var candidates = block.Entities.OfType<Line>().Where(materialBoundaries.ContainsKey)
+                .Select((line, order) =>
+                {
+                    double dx = line.EndPoint.X - line.StartPoint.X, dy = line.EndPoint.Y - line.StartPoint.Y;
+                    double length = Math.Sqrt(dx * dx + dy * dy);
+                    if (length < Epsilon) return (Line: line, Order: order, Key: "", X: 0d, Y: 0d, Start: 0d, End: 0d);
+                    double x = dx / length, y = dy / length;
+                    if (x < -Epsilon || (Math.Abs(x) < Epsilon && y < 0)) { x = -x; y = -y; }
+                    double start = x * line.StartPoint.X + y * line.StartPoint.Y;
+                    double end = x * line.EndPoint.X + y * line.EndPoint.Y;
+                    return (Line: line, Order: order, Key: CollinearKey(line), X: x, Y: y,
+                        Start: Math.Min(start, end), End: Math.Max(start, end));
+                }).Where(item => item.Key.Length > 0).ToList();
+            foreach (var group in candidates.GroupBy(item => item.Key, StringComparer.Ordinal))
+            {
+                var entries = group.ToList();
+                if (entries.Count < 2) continue;
+                var points = entries.SelectMany(item => new[] { item.Start, item.End }).OrderBy(value => value).ToList();
+                var distinct = new List<double>();
+                foreach (double point in points)
+                    if (distinct.Count == 0 || Math.Abs(point - distinct[^1]) > tolerance) distinct.Add(point);
+                var pieces = new List<(double Start, double End, Line Source, (int Priority, bool Wrapping) Owner)>();
+                int redundant = 0;
+                for (int pointIndex = 1; pointIndex < distinct.Count; pointIndex++)
+                {
+                    double start = distinct[pointIndex - 1], end = distinct[pointIndex];
+                    if (end - start <= tolerance) continue;
+                    double middle = (start + end) / 2;
+                    var covering = entries.Where(item => item.Start <= middle + tolerance && item.End >= middle - tolerance).ToList();
+                    if (covering.Count == 0) continue;
+                    var winner = covering.OrderByDescending(item => BoundaryRank(materialBoundaries[item.Line]))
+                        .ThenBy(item => item.Order).First();
+                    pieces.Add((start, end, winner.Line, materialBoundaries[winner.Line]));
+                    redundant += covering.Count - 1;
+                }
+                if (redundant == 0) continue;
+                var merged = new List<(double Start, double End, Line Source, (int Priority, bool Wrapping) Owner)>();
+                foreach (var piece in pieces)
+                {
+                    if (merged.Count > 0 && Math.Abs(merged[^1].End - piece.Start) <= tolerance
+                        && SameDisplay(merged[^1].Source, piece.Source))
+                    {
+                        var previous = merged[^1];
+                        var owner = BoundaryRank(piece.Owner) > BoundaryRank(previous.Owner) ? piece.Owner : previous.Owner;
+                        merged[^1] = (previous.Start, piece.End, previous.Source, owner);
+                    }
+                    else merged.Add(piece);
+                }
+                foreach (var entry in entries)
+                {
+                    block.Entities.Remove(entry.Line);
+                    materialBoundaries.Remove(entry.Line);
+                }
+                double axisX = entries[0].X, axisY = entries[0].Y;
+                foreach (var piece in merged)
+                {
+                    var line = (Line)piece.Source.Clone();
+                    double sourcePosition = axisX * piece.Source.StartPoint.X + axisY * piece.Source.StartPoint.Y;
+                    line.StartPoint = piece.Source.StartPoint + new XYZ(axisX, axisY, 0) * (piece.Start - sourcePosition);
+                    line.EndPoint = piece.Source.StartPoint + new XYZ(axisX, axisY, 0) * (piece.End - sourcePosition);
+                    block.Entities.Add(line);
+                    materialBoundaries[line] = piece.Owner;
+                }
+                response.MaterialBoundaryDuplicatesRemoved += redundant;
             }
         }
         void RemoveDuplicateMaterialBoundaries(BlockRecord block)
         {
-            var groups = block.Entities.Where(materialBoundaries.ContainsKey)
+            ReconcileOverlappingMaterialLines(block);
+            var groups = block.Entities.Where(entity => entity is not Line && materialBoundaries.ContainsKey(entity))
                 .Select(entity => (Entity: entity, Signature: BoundarySignature(entity)))
                 .Where(item => item.Signature != null)
                 .GroupBy(item => item.Signature!, StringComparer.Ordinal);
             foreach (var group in groups)
             {
-                var ordered = group.OrderByDescending(item => materialBoundaries[item.Entity]).ToList();
+                var ordered = group.OrderByDescending(item => BoundaryRank(materialBoundaries[item.Entity])).ToList();
                 foreach (var duplicate in ordered.Skip(1))
                 {
                     block.Entities.Remove(duplicate.Entity);
@@ -456,7 +544,8 @@ public sealed partial class ManagedDwgProcessor
                 layer.Color = new ACadSharp.Color((short)map.Color);
                 e.Layer = layer;
                 if (!isFill) e.Color = ACadSharp.Color.ByLayer;
-                if (map.BoundaryPriority > 0 && !isFill) materialBoundaries[e] = map.BoundaryPriority;
+                if (map.BoundaryPriority > 0 && !isFill)
+                    materialBoundaries[e] = (map.BoundaryPriority, map.RuleId.StartsWith("wrap:", StringComparison.Ordinal));
                 counts[map.MarkerAci]++;
             }
             if (e is MText m) m.Value = Replace(m.Value);
@@ -483,7 +572,7 @@ public sealed partial class ManagedDwgProcessor
         if (response.FilterLowerGraphicsSkipped > 0)
             response.Warnings.Add($"하부 표현 보호: Beyond/Underlay 선 {response.FilterLowerGraphicsSkipped:N0}개는 유형·재료 필터를 적용하지 않았습니다.");
         if (response.MaterialBoundaryDuplicatesRemoved > 0)
-            response.Warnings.Add($"복합재료 공유 경계: 기능 우선순위에 따라 중복선 {response.MaterialBoundaryDuplicatesRemoved:N0}개를 정리했습니다.");
+            response.Warnings.Add($"복합재료 공유 경계: 돌림마감·재료 우선순위에 따라 완전/부분 중복선 {response.MaterialBoundaryDuplicatesRemoved:N0}개를 정리했습니다.");
         foreach (var map in request.ColorRemaps)
             response.Warnings.Add($"필터 레이어 '{map.Layer}' / ACI {map.Color} · DWG 객체 {counts[map.MarkerAci]:N0}개 반영");
         if (response.LinkedMaterialFillsRemapped > 0)

@@ -34,6 +34,17 @@ internal static class GeometryOptionsRegression
             doc.Entities.Add(new Line { StartPoint = new XYZ(100, 400, 0), EndPoint = new XYZ(800, 400, 0), Layer = wide, LineWeight = LineWeightType.W80 });
             doc.Entities.Add(new Line { StartPoint = new XYZ(100, 500, 0), EndPoint = new XYZ(800, 500, 0), Layer = common,
                 Color = new Color(80, 180, 230) });
+            var translatedPattern = new HatchPattern("CE_TRANSLATED_PATTERN");
+            translatedPattern.Lines.Add(new HatchPattern.Line { Angle = 0, BasePoint = XY.Zero,
+                Offset = new XY(1905, 1905), DashLengths = new() { 1905, -1905 } });
+            var translatedHatch = new Hatch { IsSolid = false, Pattern = translatedPattern,
+                PatternType = HatchPatternType.Custom, PatternScale = 1, Color = new Color(255, 0, 255) };
+            translatedHatch.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+            {
+                new Hatch.BoundaryPath.Polyline(new[] { new XYZ(1000, -2000, 0), new XYZ(5000, -2000, 0),
+                    new XYZ(5000, 2000, 0), new XYZ(1000, 2000, 0) })
+            }));
+            doc.Entities.Add(translatedHatch);
             doc.Entities.Add(new Arc { Center = new XYZ(1200, 300, 0), Radius = 100, StartAngle = 0, EndAngle = Math.PI, Layer = wide, LineWeight = LineWeightType.W50 });
             doc.Entities.Add(new Circle { Center = new XYZ(1600, 300, 0), Radius = 100, Layer = wide, LineWeight = LineWeightType.W50 });
             var c1 = new BlockRecord("기둥 - C1-101-평면"); c1.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(200, 0, 0), Layer = common });
@@ -64,6 +75,12 @@ internal static class GeometryOptionsRegression
             check(result.FamilyBlockDefinitions == 3, "C1 instances share one definition, C2 remains separate");
             check(actual.Entities.OfType<Insert>().Select(i => i.Block).GroupBy(b => b.Name).Any(g => g.Count() == 2), "Actual DWG C1 references share a definition");
             check(actual.Entities.OfType<Line>().Any(l => l.Layer.Name == "WALL"), "Wall stays editable line");
+            var savedPattern = actual.Entities.OfType<Hatch>().Single(h => h.Pattern?.Name == "CE_TRANSLATED_PATTERN").Pattern!.Lines.Single();
+            near(savedPattern.Offset.GetLength(), Math.Sqrt(2) * 1905,
+                "Translated viewport keeps hatch repeat offset as a vector");
+            near(savedPattern.LineOffset, 1905, "Translated viewport keeps hatch perpendicular repeat spacing");
+            check(savedPattern.DashLengths.SequenceEqual(new[] { 1905d, -1905d }),
+                "Translated viewport keeps hatch dash lengths at model scale");
             check(actual.Entities.OfType<Dimension>().Any() && actual.Entities.OfType<TextEntity>().Any(t => t.Value == "시트번호:" + scale), "Dimensions and sheet parameter text remain separate");
             // Remove only the test-injected features for baseline checks separately; here
             // flatten the grouped result again and compare with the same native sans grouping.

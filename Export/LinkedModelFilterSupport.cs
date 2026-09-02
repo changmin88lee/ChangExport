@@ -8,11 +8,11 @@ namespace ChangExport.Export;
 /// <summary>Export-only support for loaded Revit links. No linked document is edited.</summary>
 internal static class LinkedModelFilterSupport
 {
-    internal static void ApplyTypeFilters(Document host, IReadOnlyList<View> views,
+    internal static HashSet<string> ApplyTypeFilters(Document host, IReadOnlyList<View> views,
         IReadOnlyList<RevitLayerRow> rules, Func<RevitLayerRow, (Color Projection, Color Cut)> marker,
         ICollection<ElementId> temporaryIds, IDictionary<string, int> matches, List<string> warnings)
     {
-        if (rules.Count == 0 || views.Count == 0) return;
+        if (rules.Count == 0 || views.Count == 0) return new HashSet<string>(StringComparer.Ordinal);
         var filters = new List<(RevitLayerRow Rule, ElementId Id)>();
         foreach (RevitLayerRow rule in rules)
         {
@@ -58,7 +58,7 @@ internal static class LinkedModelFilterSupport
                 warnings.Add($"링크 유형 필터 제외: '{rule.Category} / {rule.TypeNameContains}' · {ex.Message}");
             }
         }
-        if (filters.Count == 0) return;
+        if (filters.Count == 0) return new HashSet<string>(StringComparer.Ordinal);
 
         var linkedDocuments = new HashSet<Document>();
         int appliedLinkInstances = 0;
@@ -116,6 +116,7 @@ internal static class LinkedModelFilterSupport
         warnings.Add($"링크 유형 필터: 로드된 링크 문서 {linkedDocuments.Count:N0}개 · 뷰별 링크 인스턴스 적용 {appliedLinkInstances:N0}개"
             + (retainedLinkInstances == 0 ? "" : $" · 기존 표시 유지 {retainedLinkInstances:N0}개")
             + $" · 호스트 유형 이름 규칙 {filters.Count:N0}개");
+        return filters.Select(item => item.Rule.RuleId).ToHashSet(StringComparer.Ordinal);
     }
 
     private static void CollectDocuments(Document document, ISet<Document> documents)
