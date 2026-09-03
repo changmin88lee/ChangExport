@@ -98,7 +98,7 @@ public static class SheetSetService
     }
 
     public static void ApplyAssignments(RevitExportConfiguration config, IEnumerable<SheetSetDefinition> sets,
-        IReadOnlyDictionary<string, string> assignments)
+        IReadOnlyDictionary<string, string> assignments, IEnumerable<string>? sourceOrder = null)
     {
         config.SheetSets = sets.Select(s => s.Copy()).ToList();
         config.SheetTemplateIds = new Dictionary<string, string>(assignments, StringComparer.Ordinal);
@@ -109,5 +109,7 @@ public static class SheetSetService
                 if (string.IsNullOrWhiteSpace(set.TemplateId)) config.SheetTemplateIds.Remove(id);
                 else config.SheetTemplateIds[id] = set.TemplateId;
         }
+        if (sourceOrder != null) config.SheetSourceOrder = sourceOrder.Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal).ToList();
     }
 }

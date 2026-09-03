@@ -21,8 +21,9 @@ public sealed class ExportSettingsForm : Form
     private readonly IReadOnlyList<SheetDescriptor> _sheets;
     private readonly IReadOnlyList<LayerTemplateChoice> _templates;
     private readonly double _sheetSpacingMm;
-    private readonly Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>> _saveSets;
+    private readonly Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>, IReadOnlyList<string>> _saveSets;
     private Dictionary<string, string> _assignments;
+    private List<string> _sourceOrder;
     private readonly DataGridView _grid;
     private BindingList<ExportSetChoice> _choices = new();
     private readonly TextBox _folder;
@@ -32,14 +33,22 @@ public sealed class ExportSettingsForm : Form
         IReadOnlyList<string> setups, string selectedSetup, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>> saveSets)
         : this(sheets, sets, setups.Select((name, index) => new LayerTemplateChoice(name, name)).ToList(),
             sets.SelectMany(s => s.SheetUniqueIds.Select(id => (id, s.TemplateId))).Where(x => x.TemplateId.Length > 0).ToDictionary(x => x.id, x => x.TemplateId),
-            0, defaultFolder, (result, _) => saveSets(result)) { }
+            Array.Empty<string>(), 0, defaultFolder, (result, _, _) => saveSets(result)) { }
 
     public ExportSettingsForm(IReadOnlyList<SheetDescriptor> sheets, IReadOnlyList<SheetSetDefinition> sets,
         IReadOnlyList<LayerTemplateChoice> templates, IReadOnlyDictionary<string, string> assignments,
         double sheetSpacingMm, string defaultFolder, Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>> saveSets)
+        : this(sheets, sets, templates, assignments, Array.Empty<string>(), sheetSpacingMm, defaultFolder,
+            (result, savedAssignments, _) => saveSets(result, savedAssignments)) { }
+
+    public ExportSettingsForm(IReadOnlyList<SheetDescriptor> sheets, IReadOnlyList<SheetSetDefinition> sets,
+        IReadOnlyList<LayerTemplateChoice> templates, IReadOnlyDictionary<string, string> assignments,
+        IReadOnlyList<string> sourceOrder, double sheetSpacingMm, string defaultFolder,
+        Action<IReadOnlyList<SheetSetDefinition>, IReadOnlyDictionary<string, string>, IReadOnlyList<string>> saveSets)
     {
         _sheets = sheets; _templates = templates; _sheetSpacingMm = sheetSpacingMm; _saveSets = saveSets;
         _assignments = new Dictionary<string, string>(assignments, StringComparer.Ordinal);
+        _sourceOrder = sourceOrder.Where(key => !string.IsNullOrWhiteSpace(key)).Distinct(StringComparer.Ordinal).ToList();
         Text = "모형공간 DWG 출력"; ClientSize = new Size(1050, 700); MinimumSize = new Size(900, 590); UiTheme.Apply(this);
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), RowCount = 5, ColumnCount = 1 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -82,12 +91,13 @@ public sealed class ExportSettingsForm : Form
     }
     private void ConfigureSets()
     {
-        using var dialog = new SheetGroupManagerForm(_sheets, _choices.Select(c => c.Set), _templates, _assignments);
+        using var dialog = new SheetGroupManagerForm(_sheets, _choices.Select(c => c.Set), _templates, _assignments, _sourceOrder);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         try
         {
             _assignments = new Dictionary<string, string>(dialog.ResultAssignments, StringComparer.Ordinal);
-            _saveSets(dialog.ResultSets, _assignments); Bind(dialog.ResultSets);
+            _sourceOrder = dialog.ResultSourceOrder.ToList();
+            _saveSets(dialog.ResultSets, _assignments, _sourceOrder); Bind(dialog.ResultSets);
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "세트 저장 실패"); }
     }

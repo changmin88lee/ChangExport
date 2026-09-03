@@ -210,6 +210,7 @@ internal static class Program
         SpacingRegression.Run(output, Check, Render);
         OutputSetupRegression.Run(output, Check);
         LayerSearchRegression.Run(output, Check, Render);
+        SheetGroupUiRegression.Run(output, Check, Render);
         var uiRows = Enumerable.Range(0, 45).Select(i => new RevitLayerRow { Category = i < 15 ? "구조 기둥" : i < 30 ? "벽" : "주석",
             Subcategory = i % 15 == 0 ? "" : "하위 항목 " + i, Layer = "S-COL-" + i, OriginalLayer = "S-COL-" + i,
             CutLayer = "S-CUT-" + i, OriginalCutLayer = "S-CUT-" + i, Color = i + 1, OriginalColor = i + 1, CutColor = 7, OriginalCutColor = 7 }).ToList();
@@ -281,7 +282,7 @@ internal static class Program
             Check(Descendants(resultForm).OfType<Button>().Any(button => button.Text == "진단 TXT 저장"), "Export result exposes diagnostic TXT save");
         }
         string diagnosticText = ExportDiagnosticText.Build(exportResult);
-        Check(diagnosticText.Contains("Beta 0.13.1") && diagnosticText.Contains("블록: CE_TEST")
+        Check(diagnosticText.Contains("Beta 0.14.0") && diagnosticText.Contains("블록: CE_TEST")
             && diagnosticText.Contains("패턴 축척: 1 → 300") && diagnosticText.Contains("\"hatch\": \"FP1\"")
             && diagnosticText.Contains("verify: 12.500"), "Diagnostic TXT contains errors, sheet details and timings");
         Check(!File.Exists(Path.Combine(output, "unexpected.json")), "No UI execution side effects");

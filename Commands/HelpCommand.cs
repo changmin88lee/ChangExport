@@ -14,7 +14,7 @@ public sealed class HelpCommand : IExternalCommand
             MainInstruction = "시트 세트 · 모형공간 DWG 출력",
             MainContent =
                 "1. DWG 레이어 설정에서 +로 카테고리를 펼쳐 색상 지정, 필요 시 유형 이름 포함 필터 추가\n" +
-                "2. 호스트·링크 시트 세트 구성에서 Ctrl/Shift 선택 후 통합 세트 생성\n" +
+                "2. 모델별로 접힌 호스트·링크 시트 목록에서 항목을 선택한 후 통합 세트 생성\n" +
                 "3. 세트의 순서·가로/세로 방향 저장\n" +
                 "4. 설정에서 전역폭 판별 문자열·세트별 시트 간격 저장\n" +
                 "5. DWG 출력에서 출력 설정·세트·폴더 선택\n" +
