@@ -21,12 +21,12 @@ internal sealed class DwgPreparationQueue : IDisposable
             var processor = new ManagedDwgProcessor();
             try { return processor.Prepare(request, input, () => _stop.IsCancellationRequested); }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) when (input != fallback)
+            catch (Exception ex) when (input != fallback || !string.IsNullOrWhiteSpace(request.FilterReferencePath))
             {
                 var baseline = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = request.UseLayerColors, LayerStyles = request.LayerStyles,
                     WideLineLayers = request.WideLineLayers, FamilySources = request.FamilySources, ExcludedLayers = request.ExcludedLayers };
                 var result = processor.Prepare(baseline, fallback, () => _stop.IsCancellationRequested);
-                result.Response.Warnings.Add($"필터 출력 실패: {ex.Message} · 기본 카테고리 DWG로 저장을 계속했습니다.");
+                result.Response.Warnings.Add($"Native 필터 전사 실패: {ex.Message} · Native 기본 카테고리 DWG로 저장을 계속했습니다.");
                 return result;
             }
         }, _stop.Token)));

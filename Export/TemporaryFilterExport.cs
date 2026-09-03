@@ -55,6 +55,7 @@ internal static class TemporaryFilterExport
         // ACI has duplicate RGB entries; use one representative and exact RGB matching.
         var available = Enumerable.Range(1, 255).GroupBy(Rgb).Where(g => !usedRgb.Contains(g.Key)).Select(g => g.First()).ToQueue();
         var markers = new Dictionary<string, (Color Projection, Color Cut)>();
+        var remapsByRgb = new Dictionary<int, ColorLayerRemap>();
         (Color Projection, Color Cut) Register(string key, string projectionLayer, int projectionColor,
             string cutLayer, int cutColor, string ruleId, bool fills, int priority)
         {
@@ -62,10 +63,12 @@ internal static class TemporaryFilterExport
             if (available.Count < 2) throw new InvalidOperationException("기존 도면 색상과 충돌하지 않는 필터 식별색이 부족합니다. 원본 출력은 보존했습니다.");
             int projection = available.Dequeue(), cut = available.Dequeue();
             var pair = (ToRevit(projection), ToRevit(cut)); markers[key] = pair;
-            result.Remaps.Add(new ColorLayerRemap { MarkerAci = projection, Layer = projectionLayer, Color = projectionColor,
-                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority });
-            result.Remaps.Add(new ColorLayerRemap { MarkerAci = cut, Layer = cutLayer, Color = cutColor,
-                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority });
+            var projectionMap = new ColorLayerRemap { MarkerAci = projection, Layer = projectionLayer, Color = projectionColor,
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority };
+            var cutMap = new ColorLayerRemap { MarkerAci = cut, Layer = cutLayer, Color = cutColor,
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority };
+            result.Remaps.Add(projectionMap); result.Remaps.Add(cutMap);
+            remapsByRgb[Rgb(projection)] = projectionMap; remapsByRgb[Rgb(cut)] = cutMap;
             result.MatchedElements.TryAdd(ruleId, 0);
             return pair;
         }
@@ -82,6 +85,22 @@ internal static class TemporaryFilterExport
             MaterialFunctionAssignment.Membrane => 200,
             _ => 100
         };
+        void RestrictToSourceCategory((Color Projection, Color Cut) marker, Element sourceElement)
+        {
+            if (sourceElement.Category == null) return;
+            var sourceLayers = rows.Where(row => !row.IsCustom
+                    && (row.CategoryId == sourceElement.Category.Id.Value
+                        || row.Category.Equals(sourceElement.Category.Name, StringComparison.OrdinalIgnoreCase)))
+                .SelectMany(row => new[] { row.Layer, row.CutLayer }).Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (Color color in new[] { marker.Projection, marker.Cut })
+            {
+                int rgb = (color.Red << 16) | (color.Green << 8) | color.Blue;
+                if (!remapsByRgb.TryGetValue(rgb, out ColorLayerRemap? map)) continue;
+                foreach (string layer in sourceLayers)
+                    if (!map.SourceLayers.Contains(layer, StringComparer.OrdinalIgnoreCase)) map.SourceLayers.Add(layer);
+            }
+        }
         Dictionary<ElementId, MaterialLayerRule> MaterialIndex(Document owner)
         {
             if (ReferenceEquals(owner, document)) return materialIndex;
@@ -145,6 +164,7 @@ internal static class TemporaryFilterExport
                 string match = "wrap:" + material.RuleId;
                 var marker = Register(match, material.Layer, material.Color, material.Layer, material.Color,
                     match, false, 1);
+                RestrictToSourceCategory(marker, element);
                 return (marker.Projection, marker.Cut, match);
             }
             RevitLayerRow? row = TypeRule(document, element) ?? rows.FirstOrDefault(candidate => !candidate.IsCustom
@@ -155,6 +175,7 @@ internal static class TemporaryFilterExport
             string fallback = "wrap-category:" + (row.CategoryId?.ToString() ?? row.Category);
             var categoryMarker = Register(fallback, row.Layer, row.Color, row.CutLayer, row.CutColor,
                 fallback, false, 1);
+            RestrictToSourceCategory(categoryMarker, element);
             return (categoryMarker.Projection, categoryMarker.Cut, fallback);
         }
         using var group = new TransactionGroup(document, "창Export 임시 필터 출력 (복구)");
@@ -374,8 +395,9 @@ internal static class TemporaryFilterExport
                     }
                     else if (materialRule != null)
                     {
-                        marker = Register($"material:{materialRule.RuleId}:{priority}", materialRule.Layer, materialRule.Color,
+                        marker = Register($"material:{materialRule.RuleId}:{priority}:{sourceElement.Category?.Id.Value}", materialRule.Layer, materialRule.Color,
                             materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
+                        RestrictToSourceCategory(marker, sourceElement);
                         matchedRule = materialRule.RuleId;
                     }
                     else if (TypeRule(sourceOwner, sourceElement) is { } typeRule)

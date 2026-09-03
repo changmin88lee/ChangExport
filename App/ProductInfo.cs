@@ -2,5 +2,5 @@ namespace ChangExport.App;
 
 public static class ProductInfo
 {
-    public const string Version = "Beta 0.12.6";
+    public const string Version = "Beta 0.13.0";
 }

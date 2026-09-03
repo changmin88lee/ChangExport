@@ -4,6 +4,7 @@ using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows.Forms;
+using ACadSharp.IO;
 using ChangExport.DwgProcessing;
 using ChangExport.Export;
 using ChangExport.Models;
@@ -46,6 +47,7 @@ internal static class Program
             else if (args.Length > 0 && args[0] == "families") FamilyRecognitionRegression.Run(output, Check, args.Length > 2 ? args[2] : null);
             else if (args.Length > 0 && args[0] == "arcs") ArcRotationRegression.Run(output, Check, args.Length > 2 ? args[2] : null, args.Length > 3 ? args[3] : null);
             else if (args.Length > 0 && args[0] == "fills-real") FillAppearanceRegression.Run(output, args[2], Check);
+            else if (args.Length > 0 && args[0] == "nge-real") NativeGeometryReal(output, args[2], args[3], args[4], int.Parse(args[5]));
             else if (args.Length > 0 && args[0] == "inspect") InspectDrawings(output, args[2]);
             else if (args.Length > 0 && args[0] == "real") ActualRevitDrawings(output, args[2]);
             else Managed(output);
@@ -113,6 +115,45 @@ internal static class Program
         }).ToArray();
         File.WriteAllText(Path.Combine(output, "drawing-inspection.json"), JsonSerializer.Serialize(records, new JsonSerializerOptions { WriteIndented = true }));
         _checks += records.Length;
+    }
+
+    private static void NativeGeometryReal(string output, string nativePath, string filteredPath, string manifestPath, int diagnosticIndex)
+    {
+        using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        JsonElement diagnostics = manifest.RootElement.GetProperty("items")[0].GetProperty("SheetDiagnostics");
+        JsonElement filter = diagnostics.EnumerateArray().Where(element => element.TryGetProperty("filterRemaps", out _)).ElementAt(diagnosticIndex);
+        var remaps = JsonSerializer.Deserialize<List<ColorLayerRemap>>(filter.GetProperty("filterRemaps").GetRawText()) ?? new();
+        var matches = JsonSerializer.Deserialize<Dictionary<string, int>>(filter.GetProperty("filterMatches").GetRawText()) ?? new();
+        string nativeOutput = Path.Combine(output, "native-only.dwg"), ngeOutput = Path.Combine(output, "native-overlay.dwg");
+        string nativeHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(nativePath)));
+        string filteredHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filteredPath)));
+        var processor = new ManagedDwgProcessor();
+        var baseline = processor.Run(new BridgeRequest { Operation = "Flatten", RevitSheet = true, OutputPath = nativeOutput }, nativePath, output);
+        var result = processor.Run(new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = true,
+            OutputPath = ngeOutput, FilterReferencePath = filteredPath, ColorRemaps = remaps, ExpectedRuleMatches = matches }, nativePath, output);
+        var baselineDoc = DwgReader.Read(nativeOutput); var resultDoc = DwgReader.Read(ngeOutput);
+        var baselineTypes = baselineDoc.BlockRecords.SelectMany(block => block.Entities).GroupBy(entity => entity.ObjectName)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var resultTypes = resultDoc.BlockRecords.SelectMany(block => block.Entities).GroupBy(entity => entity.ObjectName)
+            .ToDictionary(group => group.Key, group => group.Count());
+        Check(result.GeometrySource == "NativeGeometry", "Actual Revit NGE run reports native geometry");
+        Check(baselineTypes.OrderBy(pair => pair.Key).SequenceEqual(resultTypes.OrderBy(pair => pair.Key)),
+            "Actual Revit NGE output retains the native entity-type inventory");
+        Check(result.CustomRuleEntityCounts.Values.Sum() > 0 && result.NativeOverlayMatchedEntities > 0,
+            "Actual Revit filter classifications reach exact native entities");
+        Check(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(nativePath))) == nativeHash
+            && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(filteredPath))) == filteredHash,
+            "Actual Revit source and filtered staging drawings remain unchanged");
+        File.WriteAllText(Path.Combine(output, "nge-real-result.json"), JsonSerializer.Serialize(new
+        {
+            nativePath, filteredPath, baseline, result, baselineTypes, resultTypes,
+            targetLayerTypes = DwgRegression.Walk(resultDoc.ModelSpace)
+                .Where(entity => remaps.Any(map => map.Layer.Equals(entity.Layer.Name, StringComparison.OrdinalIgnoreCase)))
+                .GroupBy(entity => entity.Layer.Name).ToDictionary(group => group.Key,
+                    group => group.GroupBy(entity => entity.ObjectName).ToDictionary(types => types.Key, types => types.Count())),
+            redNativeHatches = DwgRegression.Walk(resultDoc.ModelSpace).OfType<ACadSharp.Entities.Hatch>()
+                .Count(hatch => hatch.Color.R > 240 && hatch.Color.G < 20 && hatch.Color.B < 20)
+        }, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static void Managed(string output)
@@ -240,10 +281,11 @@ internal static class Program
             Check(Descendants(resultForm).OfType<Button>().Any(button => button.Text == "진단 TXT 저장"), "Export result exposes diagnostic TXT save");
         }
         string diagnosticText = ExportDiagnosticText.Build(exportResult);
-        Check(diagnosticText.Contains("Beta 0.12.6") && diagnosticText.Contains("블록: CE_TEST")
+        Check(diagnosticText.Contains("Beta 0.13.0") && diagnosticText.Contains("블록: CE_TEST")
             && diagnosticText.Contains("패턴 축척: 1 → 300") && diagnosticText.Contains("\"hatch\": \"FP1\"")
             && diagnosticText.Contains("verify: 12.500"), "Diagnostic TXT contains errors, sheet details and timings");
         Check(!File.Exists(Path.Combine(output, "unexpected.json")), "No UI execution side effects");
+        NativeGeometryRegression.Run(output, Check);
     }
     private static IEnumerable<Control> Descendants(Control control)
     { foreach (Control child in control.Controls) { yield return child; foreach (var nested in Descendants(child)) yield return nested; } }

@@ -45,6 +45,8 @@ public sealed partial class ManagedDwgProcessor
 
     public PreparedDrawing Prepare(BridgeRequest request, string inputDrawing, Func<bool>? cancel = null, Action? pump = null)
     {
+        if (!string.IsNullOrWhiteSpace(request.FilterReferencePath))
+            return PrepareNativeGeometry(request, inputDrawing, cancel, pump);
         Action Check = CreateCheck(cancel, pump);
         Check();
         var clock = Stopwatch.StartNew();

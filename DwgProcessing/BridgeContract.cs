@@ -14,6 +14,9 @@ namespace ChangExport.DwgProcessing
         // Revit sheet DWG coordinates are millimeters. Plotter paper metadata is not a coordinate unit.
         public bool RevitSheet { get; set; }
         public bool UseLayerColors { get; set; }
+        // Native Geometry Engine (NGE): inputDrawing remains the only geometry
+        // source. This detached filtered DWG supplies classification markers only.
+        public string FilterReferencePath { get; set; } = "";
         public List<ColorLayerRemap> ColorRemaps { get; set; } = new();
         public List<MaterialAppearanceRemap> MaterialAppearanceRemaps { get; set; } = new();
         public Dictionary<string, string> TextReplacements { get; set; } = new();
@@ -71,6 +74,9 @@ namespace ChangExport.DwgProcessing
         public bool RemapFills { get; set; }
         // Shared compound-layer boundaries keep the highest Revit material function.
         public int BoundaryPriority { get; set; }
+        // Optional native category-layer gate. Material Part markers may only
+        // classify native entities that came from the same Revit source category.
+        public List<string> SourceLayers { get; set; } = new();
     }
 
     /// <summary>
@@ -132,6 +138,10 @@ namespace ChangExport.DwgProcessing
         public int LinkedMaterialBoundariesRemapped { get; set; }
         public int FilterContainerMarkersIgnored { get; set; }
         public int FilterLowerGraphicsSkipped { get; set; }
+        public string GeometrySource { get; set; } = "FilteredGeometry";
+        public int NativeOverlayMatchedEntities { get; set; }
+        public int NativeOverlayUnmatchedMarkers { get; set; }
+        public int NativeOverlayAmbiguousMarkers { get; set; }
         public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }
         public int WideLineSkipped { get; set; }

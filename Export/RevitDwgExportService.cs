@@ -155,7 +155,8 @@ public sealed class RevitDwgExportService
                                 var filterClock = Stopwatch.StartNew();
                                 var filtered = TemporaryFilterExport.Export(sourceDocument, sheet, options, layers, materialRules, nativeDirectory,
                                     Path.Combine(setFolder, $"filtered_{sheetIndex + 1:000}"), item.Warnings, cancel);
-                                input = filtered.Drawing; request.ColorRemaps = filtered.Remaps.ToList();
+                                request.FilterReferencePath = filtered.Drawing;
+                                request.ColorRemaps = filtered.Remaps.ToList();
                                 request.TextReplacements = new(filtered.TextReplacements);
                                 item.TimingsMs[$"{sheetLabel}:filter"] = filterClock.Elapsed.TotalMilliseconds;
                                 foreach (var timing in filtered.TimingsMs)
@@ -189,6 +190,8 @@ public sealed class RevitDwgExportService
                             conversion.PreservedFillColors, conversion.PreservedMaskingEntities, conversion.MaterialBoundaryDuplicatesRemoved,
                             conversion.LinkedMaterialFillsRemapped, conversion.LinkedMaterialBoundariesRemapped,
                             conversion.FilterContainerMarkersIgnored, conversion.FilterLowerGraphicsSkipped, conversion.ExcludedEntities,
+                            conversion.GeometrySource, conversion.NativeOverlayMatchedEntities,
+                            conversion.NativeOverlayUnmatchedMarkers, conversion.NativeOverlayAmbiguousMarkers,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
                             conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
                             conversion.FamilySignaturesComputed, conversion.FamilySignaturesSkipped, conversion.FamilySignatureCacheHits,
@@ -245,7 +248,9 @@ public sealed class RevitDwgExportService
                 postProcessor = ManagedDwgProcessor.EngineName, externalSoftwareRequired = false, mergedViewsForStaging = false, originalSetupModified = false,
                 sheetSourcePolicy = "Host and loaded local/network Revit links, including nested loaded links; linked RVTs are filtered in disposable local copies and never modified",
                 customFiltersRequested = runtimes.Values.Sum(r => r.Layers.Count(row => row.IsCustom)), materialFiltersRequested = runtimes.Values.Sum(r => r.MaterialRules.Count),
-                customFilterMethod = "Independent temporary sheet/view copies; host and linked compound wall/floor Parts; linked type-name filters propagated by host view filters; per-material unique color markers; transaction-group rollback; lower/beyond graphics excluded",
+                geometryEngine = "Native Geometry Engine (NGE)",
+                geometrySourcePolicy = "The original Revit native sheet DWG is the only final geometry source; the temporary filtered DWG supplies classification evidence only",
+                customFilterMethod = "Independent temporary sheet/view copies; host and linked compound wall/floor Parts; linked type-name filters propagated by host view filters; per-material unique color markers; exact native-geometry classification overlay; transaction-group rollback; lower/beyond graphics excluded",
                 materialRules = allMaterialRules,
                 sheetSpacingMm = configuration.SheetSpacingMm, requestedSets = sets,
                 layerEdits = allLayers.Where(l => l.HasChanges).ToList(), result.Cancelled, result.WorkFolder, items = result.Items
