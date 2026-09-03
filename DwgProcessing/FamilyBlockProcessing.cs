@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Diagnostics;
 using ACadSharp;
 using ACadSharp.Entities;
+using ACadSharp.Objects;
 using ACadSharp.Tables;
 using CSMath;
 using Color = ACadSharp.Color;
@@ -103,19 +104,26 @@ public sealed partial class ManagedDwgProcessor
         .FirstOrDefault(p => name.Contains(p.Key, StringComparison.Ordinal)).Value;
 
     private static void GroupFamily(List<Entity> output, int start, Transform transform, FamilyBlockInfo info,
-        BridgeResponse response, GeometryContext geometry)
+        BridgeResponse response, GeometryContext geometry, List<List<XY>> clips)
     {
         var members = output.Skip(start).ToArray();
+        static Entity BoundaryLeaf(Entity entity)
+        {
+            while (entity is Insert { SpatialFilter: not null } insert && insert.Block.Entities.Count == 1)
+                entity = insert.Block.Entities.Single();
+            return entity;
+        }
+        var leaves = members.Select(BoundaryLeaf).ToArray();
         void Keep(string reason) => response.FamilyBlockFallbacks[reason] = response.FamilyBlockFallbacks.GetValueOrDefault(reason) + 1;
         if (members.Length == 0) return;
-        if (!info.IsDetailGroup && (members.Any(e => e is Insert or Dimension or AttributeEntity or AttributeDefinition)
-            || (!info.IsTitleBlock && members.Any(e => e is TextEntity or MText))))
+        if (!info.IsDetailGroup && (leaves.Any(e => e is Insert or Dimension or AttributeEntity or AttributeDefinition)
+            || (!info.IsTitleBlock && leaves.Any(e => e is TextEntity or MText))))
         { Keep("주석·잘림 객체가 섞인 패밀리의 표시 순서 보존"); return; }
         if (!IsPlanarFamilyTransform(transform) || !Matrix4.Inverse(transform.Matrix, out var inverse))
         { Keep("반전·비균등·기울어진 패밀리의 형상 보존"); return; }
         var local = new List<Entity>();
         int dimension = 0;
-        foreach (var member in members)
+        foreach (var member in leaves)
         {
             var clone = (Entity)member.Clone();
             TransformEditable(clone, new Transform(inverse), ref dimension);
@@ -131,7 +139,24 @@ public sealed partial class ManagedDwgProcessor
         var block = new BlockRecord(token);
         foreach (var entity in local) block.Entities.Add(entity);
         var insert = PlaceFamily(block, transform);
-        output.RemoveRange(start, output.Count - start); output.Add(insert);
+        Entity grouped = insert;
+        var inverseTransform = new Transform(inverse);
+        for (int index = 0; index < clips.Count; index++)
+        {
+            List<XY> boundary = index == 0
+                ? clips[index].Select(point => inverseTransform.ApplyTransform(new XYZ(point.X, point.Y, 0)))
+                    .Select(point => new XY(point.X, point.Y)).ToList()
+                : clips[index];
+            var filter = new SpatialFilter(SpatialFilter.SpatialFilterEntryName)
+            { Origin = XYZ.Zero, Normal = XYZ.AxisZ, DisplayBoundary = true, BoundaryPoints = boundary };
+            if (index == 0) insert.SpatialFilter = filter;
+            else
+            {
+                var wrapper = new BlockRecord("CE_BOUNDARY_FAMILY_" + Guid.NewGuid().ToString("N"));
+                wrapper.Entities.Add(grouped); grouped = new Insert(wrapper) { SpatialFilter = filter };
+            }
+        }
+        output.RemoveRange(start, output.Count - start); output.Add(grouped);
         response.FamilyBlocks[token] = new FamilyBlockInfo { Identity = info.Identity, Label = info.Label,
             IsTitleBlock = info.IsTitleBlock, IsDetailGroup = info.IsDetailGroup, Processed = true };
     }
@@ -222,6 +247,8 @@ public sealed partial class ManagedDwgProcessor
                     var replacement = new Insert(same) { InsertPoint = insert.InsertPoint, Normal = insert.Normal,
                         Rotation = insert.Rotation, XScale = insert.XScale, YScale = insert.YScale, ZScale = insert.ZScale };
                     replacement.MatchProperties(insert); insert = replacement; changed = true;
+                    if (ordered[index] is Insert original && original.SpatialFilter is { } spatialFilter)
+                        insert.SpatialFilter = (SpatialFilter)spatialFilter.Clone();
                 }
                 else
                 {

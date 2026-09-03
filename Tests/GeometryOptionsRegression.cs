@@ -60,28 +60,29 @@ internal static class GeometryOptionsRegression
             string input = Path.Combine(output, "geometry-" + scale + "-native.dwg"); DwgWriter.Write(input, doc); natives.Add(input);
             var request = Request(); request.Operation = "Flatten"; request.OutputPath = Path.Combine(output, "geometry-" + scale + ".dwg");
             var result = processor.Run(request, input, output); var actual = DwgReader.Read(request.OutputPath);
+            Entity[] all = DwgRegression.Walk(actual.ModelSpace).ToArray();
             check(result.WideLineConverted == 4 && result.WideLineSkipped == 0, "Only marked lines/arcs/circles converted");
-            var polys = actual.Entities.OfType<LwPolyline>().Where(e => e.Layer.Name == "공통").ToArray();
+            var polys = all.OfType<LwPolyline>().Where(e => e.Layer.Name == "공통").ToArray();
             check(polys.Length == 4, "Same output layer does not convert unmarked lines");
             check(polys.Count(p => Math.Abs(p.ConstantWidth - .5 * scale) < 1e-6) == 3, "Original ByLayer weight retained despite requested 2.11 mm layer weight");
             near(polys.Max(p => p.ConstantWidth), .8 * scale, "Individual Revit output weight override used");
             check(polys.All(p => !p.Color.IsByLayer && !p.Color.IsByBlock && p.Color.R == 12 && p.Color.G == 180 && p.Color.B == 44
                 && p.LineWeight == LineWeightType.W0), "Only converted ## polylines retain forced Revit RGB without second lineweight");
             check(result.PreservedWideLineColors == 4, "Each successfully converted ## polyline records preserved color");
-            check(actual.Entities.OfType<Line>().Any(l => l.Layer.Name == "공통" && l.Color.IsByLayer),
+            check(all.OfType<Line>().Any(l => l.Layer.Name == "공통" && l.Color.IsByLayer),
                 "Unmarked detail line remains LINE and follows its layer color");
             check(actual.Layers.All(l => !l.Name.Contains("CE_TEST_WIDE")), "No temporary width layer leaks");
             check(result.FamilyBlockReferences == 4, "Two C1, one C2, one titleblock become references");
             check(result.FamilyBlockDefinitions == 3, "C1 instances share one definition, C2 remains separate");
             check(actual.Entities.OfType<Insert>().Select(i => i.Block).GroupBy(b => b.Name).Any(g => g.Count() == 2), "Actual DWG C1 references share a definition");
             check(actual.Entities.OfType<Line>().Any(l => l.Layer.Name == "WALL"), "Wall stays editable line");
-            var savedPattern = actual.Entities.OfType<Hatch>().Single(h => h.Pattern?.Name == "CE_TRANSLATED_PATTERN").Pattern!.Lines.Single();
+            var savedPattern = all.OfType<Hatch>().Single(h => h.Pattern?.Name == "CE_TRANSLATED_PATTERN").Pattern!.Lines.Single();
             near(savedPattern.Offset.GetLength(), Math.Sqrt(2) * 1905,
                 "Translated viewport keeps hatch repeat offset as a vector");
             near(savedPattern.LineOffset, 1905, "Translated viewport keeps hatch perpendicular repeat spacing");
             check(savedPattern.DashLengths.SequenceEqual(new[] { 1905d, -1905d }),
                 "Translated viewport keeps hatch dash lengths at model scale");
-            check(actual.Entities.OfType<Dimension>().Any() && actual.Entities.OfType<TextEntity>().Any(t => t.Value == "시트번호:" + scale), "Dimensions and sheet parameter text remain separate");
+            check(all.OfType<Dimension>().Any() && all.OfType<TextEntity>().Any(t => t.Value == "시트번호:" + scale), "Dimensions and sheet parameter text remain separate");
             // Remove only the test-injected features for baseline checks separately; here
             // flatten the grouped result again and compare with the same native sans grouping.
             var plain = Request(); plain.FamilySources.Clear(); plain.Operation = "Flatten"; plain.OutputPath = Path.Combine(output, "plain-" + scale + ".dwg");
@@ -100,8 +101,9 @@ internal static class GeometryOptionsRegression
             var result = processor.MergePrepared(request, prepared, output);
             check(result.FamilyBlockReferences == 8, "Merge keeps family references, not whole sheet blocks");
             var actual = DwgReader.Read(request.OutputPath);
-            check(actual.Entities.OfType<LwPolyline>().Any(p => p.ConstantWidth == 50) && actual.Entities.OfType<LwPolyline>().Any(p => p.ConstantWidth == 100), "Merge preserves 100/200 sheet widths without double scaling");
-            check(actual.Entities.OfType<LwPolyline>().Where(p => p.ConstantWidth > 0).All(p => p.Color.R == 12 && p.Color.G == 180 && p.Color.B == 44),
+            var polylines = DwgRegression.Walk(actual.ModelSpace).OfType<LwPolyline>().ToArray();
+            check(polylines.Any(p => p.ConstantWidth == 50) && polylines.Any(p => p.ConstantWidth == 100), "Merge preserves 100/200 sheet widths without double scaling");
+            check(polylines.Where(p => p.ConstantWidth > 0).All(p => p.Color.R == 12 && p.Color.G == 180 && p.Color.B == 44),
                 "Prepared ## polyline RGB survives final multi-sheet merge");
             near(result.Placements[0].Width, 42000, "First sheet extents unchanged"); near(result.Placements[1].Width, 84000, "Second sheet extents unchanged");
         }
@@ -157,11 +159,12 @@ internal static class GeometryOptionsRegression
         var processor = new ManagedDwgProcessor(); var result = processor.Run(request, input, output);
         check(result.Success && result.WideLineConverted == 3 && result.WideLineSkipped == 2, "Unsupported curves and missing widths preserve output, not abort");
         var actual = DwgReader.Read(request.OutputPath);
-        near(actual.Entities.OfType<LwPolyline>().Single(p => p.Layer.Name == "FilterWide").ConstantWidth, .8, "Custom filter retains the original weight marker");
-        check(actual.Entities.OfType<LwPolyline>().Count(p => p.Layer.Name == "Wide") == 2, "Shared definition inherits width per insertion, unmarked insertion stays a line");
-        check(actual.Entities.OfType<LwPolyline>().Where(p => p.Layer.Name == "Wide").Select(p => p.ConstantWidth).Order().SequenceEqual(new[] { .5, .8 }), "ByBlock native widths do not overwrite each other");
-        check(actual.Entities.OfType<Ellipse>().Count() == 1, "Unsupported ellipse stays intact");
-        check(actual.Entities.OfType<TextEntity>().Any(t => t.Value == "독립 주석"), "Standalone annotation block is exploded");
+        Entity[] all = DwgRegression.Walk(actual.ModelSpace).ToArray();
+        near(all.OfType<LwPolyline>().Single(p => p.Layer.Name == "FilterWide").ConstantWidth, .8, "Custom filter retains the original weight marker");
+        check(all.OfType<LwPolyline>().Count(p => p.Layer.Name == "Wide") == 2, "Shared definition inherits width per insertion, unmarked insertion stays a line");
+        check(all.OfType<LwPolyline>().Where(p => p.Layer.Name == "Wide").Select(p => p.ConstantWidth).Order().SequenceEqual(new[] { .5, .8 }), "ByBlock native widths do not overwrite each other");
+        check(all.OfType<Ellipse>().Count() == 1, "Unsupported ellipse stays intact");
+        check(all.OfType<TextEntity>().Any(t => t.Value == "독립 주석"), "Standalone annotation block is exploded");
         check(result.FamilyBlockReferences == 3 && result.FamilyBlockDefinitions >= 2, "Same family/type with different geometry stays separate");
         var baseline = new BridgeRequest { Operation = "Flatten", RevitSheet = true, UseLayerColors = true,
             OutputPath = Path.Combine(output, "geometry-edge-plain.dwg"), WideLineLayers = request.WideLineLayers,

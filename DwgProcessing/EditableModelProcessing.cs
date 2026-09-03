@@ -101,7 +101,7 @@ public sealed partial class ManagedDwgProcessor
                 int familyStart = output.Count;
                 foreach (Entity child in sourceInsert.Block.GetSortedEntities()) Add(child, combined, activeClips, insert, depth + 1, familyMember || family != null, nativeDisplay);
                 if (!familyMember && family is { Processed: false })
-                    GroupFamily(output, familyStart, combined, family, response, geometry!);
+                    GroupFamily(output, familyStart, combined, family, response, geometry!, activeClips);
                 // Attribute positions are already in the enclosing insert's coordinates.
                 foreach (AttributeEntity attribute in sourceInsert.Attributes)
                 {
@@ -125,13 +125,8 @@ public sealed partial class ManagedDwgProcessor
                 foreach (Line segment in ClipLine(line, clips)) output.Add(MakeWideLine(segment, wide, response.ModelScale, response, geometry));
                 return;
             }
-            Box bounds = Bounds(entity);
-            if (clips.Any(p => Outside(bounds, p))) return;
-            if (clips.All(p => Inside(bounds, p))) { output.Add(MakeWideLine(entity, wide, response.ModelScale, response, geometry)); return; }
-
-            // A boundary-crossing text, hatch or curved entity must not be dropped or
-            // approximated as arbitrary short lines. Retain only this entity's clip,
-            // not the entire sheet/view and its unrelated model contents.
+            // A text, hatch or curved entity cannot be classified safely with an
+            // axis-aligned envelope. Preserve it under the exact viewport boundary.
             string kind = entity.ObjectName;
             entity = MakeWideLine(entity, wide, response.ModelScale, response, geometry);
             retained[kind] = retained.GetValueOrDefault(kind) + 1;
@@ -153,8 +148,8 @@ public sealed partial class ManagedDwgProcessor
         foreach (var entity in output) target.Entities.Add(entity);
         PreserveMaskDrawOrder(target.ModelSpace, output);
         if (retained.Count > 0)
-            response.Warnings.Add("경계 표현 보존: 잘림 경계를 가로지르는 " + string.Join(", ", retained.Select(p => $"{p.Key} {p.Value}개"))
-                + "는 해당 객체만 작은 잘림 블록으로 유지했습니다. 일반 선과 시트 전체는 블록으로 묶지 않습니다.");
+            response.Warnings.Add("경계 표현 보존: 뷰포트 경계가 적용된 " + string.Join(", ", retained.Select(p => $"{p.Key} {p.Value}개"))
+                + "는 해당 객체만 정확한 잘림 경계로 유지했습니다. 일반 선과 시트 전체는 블록으로 묶지 않습니다.");
         SetExtents(target);
         return target;
     }
@@ -378,17 +373,6 @@ public sealed partial class ManagedDwgProcessor
         }
     }
 
-    private static bool Outside(Box box, List<XY> polygon) => box.MaxX < polygon.Min(p => p.X) - Epsilon
-        || box.MinX > polygon.Max(p => p.X) + Epsilon || box.MaxY < polygon.Min(p => p.Y) - Epsilon || box.MinY > polygon.Max(p => p.Y) + Epsilon;
-
-    private static bool Inside(Box b, List<XY> polygon)
-    {
-        var corners = new[] { new XY(b.MinX, b.MinY), new XY(b.MaxX, b.MinY), new XY(b.MaxX, b.MaxY), new XY(b.MinX, b.MaxY) };
-        if (!corners.All(p => PointInside(p, polygon))) return false;
-        // A concave boundary can cut into the box even when all four corners are inside.
-        return !polygon.Any(p => p.X > b.MinX + Epsilon && p.X < b.MaxX - Epsilon && p.Y > b.MinY + Epsilon && p.Y < b.MaxY - Epsilon);
-    }
-
     private static bool PointInside(XY p, List<XY> polygon)
     {
         bool inside = false;
@@ -399,8 +383,10 @@ public sealed partial class ManagedDwgProcessor
             if (Math.Abs(cross) <= Epsilon * Math.Max(1, Math.Abs(b.X - a.X) + Math.Abs(b.Y - a.Y))
                 && p.X >= Math.Min(a.X, b.X) - Epsilon && p.X <= Math.Max(a.X, b.X) + Epsilon
                 && p.Y >= Math.Min(a.Y, b.Y) - Epsilon && p.Y <= Math.Max(a.Y, b.Y) + Epsilon) return true;
-            if ((a.Y > p.Y) != (b.Y > p.Y) && p.X < (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X) inside = !inside;
+            if ((a.Y > p.Y) != (b.Y > p.Y)
+                && p.X < (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X) inside = !inside;
         }
         return inside;
     }
+
 }

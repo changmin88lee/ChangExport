@@ -283,7 +283,6 @@ public sealed partial class ManagedDwgProcessor
         bool Active(Viewport v) => revitSheet ? IsEnabledViewport(v) : IsActiveView(v);
         bool hasOmittedViews = layout.AssociatedBlock.Entities.OfType<Viewport>().Any(v => Active(v) && OmitViewport(v));
         int index = 0;
-        var lineworkBounds = new Dictionary<Entity, Box?>();
         foreach (Entity entity in layout.AssociatedBlock.GetSortedEntities())
         {
             check();
@@ -296,7 +295,7 @@ public sealed partial class ManagedDwgProcessor
                     warnings.Add($"생략: 원근·음영 뷰포트 {viewport.Handle:X}. 도곽·주석과 다른 뷰포트의 출력은 계속했습니다.");
                     continue;
                 }
-                var converted = ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews, revitSheet ? lineworkBounds : null);
+                var converted = ConvertViewport(source, viewport, "CE_VIEW_" + ++index, warnings, check, hasOmittedViews);
                 sheet.Entities.Add(converted); sheetOrder.Add(converted);
             }
             else
@@ -331,7 +330,7 @@ public sealed partial class ManagedDwgProcessor
         || viewport.RenderMode is not (RenderMode.Optimized2D or RenderMode.Wireframe)
         || viewport.ShadePlotMode is ShadePlotMode.Hidden or ShadePlotMode.Rendered;
 
-    private static Insert ConvertViewport(CadDocument source, Viewport viewport, string prefix, List<string> warnings, Action check, bool hasOmittedViews, Dictionary<Entity, Box?>? lineworkBounds = null)
+    private static Insert ConvertViewport(CadDocument source, Viewport viewport, string prefix, List<string> warnings, Action check, bool hasOmittedViews)
     {
         if (!double.IsFinite(viewport.ScaleFactor) || viewport.ScaleFactor <= 0 || viewport.Width <= 0 || viewport.Height <= 0)
             throw new InvalidDataException("뷰포트 크기 또는 축척이 올바르지 않습니다.");
@@ -348,7 +347,6 @@ public sealed partial class ManagedDwgProcessor
             check();
             if (frozen.Contains(entity.Layer.Name)) continue;
             if (OmitModelGeometry(entity, hasOmittedViews, warnings)) continue;
-            if (lineworkBounds != null && OutsideViewportLinework(entity, viewport, lineworkBounds)) continue;
             Entity clone = (Entity)entity.Clone();
             clone = PrepareClone(clone, prefix + "_", frozen, lineScale, new HashSet<BlockRecord>(), warnings, hasOmittedViews);
             block.Entities.Add(clone);

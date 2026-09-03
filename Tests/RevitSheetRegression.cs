@@ -39,16 +39,18 @@ internal static class RevitSheetRegression
                 new() { MarkerAci = 201, Layer = "A-MATERIAL-CUT", Color = 4, RuleId = "material", RemapFills = true, BoundaryPriority = 700 }
             } }, input, output);
         var saved = DwgReader.Read(target);
-        check(!saved.Entities.OfType<Insert>().Any(), "Simple Revit output is individual entities, not a sheet block");
+        Entity[] all = DwgRegression.Walk(saved.ModelSpace).ToArray();
+        check(saved.Entities.OfType<Insert>().All(insert => insert.SpatialFilter != null),
+            "Only exact per-entity viewport clipping wrappers remain; there is no sheet container block");
         near(result.ModelScale, 100, "First actual viewport determines 1:100 model scaling, not default paper viewport");
         near(saved.Header.ModelSpaceExtMax.X - saved.Header.ModelSpaceExtMin.X, 42000, "A3 frame enlarged 100 times in millimeters");
         near(saved.Header.ModelSpaceExtMax.Y - saved.Header.ModelSpaceExtMin.Y, 29700, "A3 frame height enlarged 100 times");
-        var sourceLine = saved.Entities.OfType<Line>().Single(line => line.Layer.Name == "S-COL");
+        var sourceLine = all.OfType<Line>().Single(line => line.Layer.Name == "S-COL");
         near(sourceLine.EndPoint.DistanceFrom(sourceLine.StartPoint), Math.Sqrt(2) * 1000, "Referenced line actual length retained");
         check(result.FilterContainerMarkersIgnored == 1
-            && saved.Entities.OfType<Line>().Count(line => line.Layer.Name == "S-COL") == 1
-            && saved.Entities.OfType<Line>().Count(line => line.Layer.Name == "A-MATERIAL-CUT") == 1
-            && !saved.Entities.Any(entity => entity.Layer.Name == "A-MATERIAL"),
+            && all.OfType<Line>().Count(line => line.Layer.Name == "S-COL") == 1
+            && all.OfType<Line>().Count(line => line.Layer.Name == "A-MATERIAL-CUT") == 1
+            && !all.Any(entity => entity.Layer.Name == "A-MATERIAL"),
             "Material marker on a placed-view XREF does not recolor unrelated view geometry; leaf material markers still remap");
         check(result.ConvertedViewports == 1, "Default layout viewport skipped independently of order");
         check(saved.BlockRecords.All(b => (b.Flags & (BlockTypeFlags.XRef | BlockTypeFlags.XRefOverlay)) == 0), "No external reference remains");

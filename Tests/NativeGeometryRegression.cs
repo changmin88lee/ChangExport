@@ -22,6 +22,14 @@ internal static class NativeGeometryRegression
             new Hatch.BoundaryPath.Polyline(new[] { new XYZ(500, 300, 0), new XYZ(550, 350, 0), new XYZ(600, 300, 0) })
         }));
         native.Entities.Add(linkedTriangle);
+        // Same old bounding box and edge type, but a different boundary. It must
+        // not inherit the first triangle's material classification.
+        var differentTriangle = new Hatch { IsSolid = true, Color = new ACadSharp.Color(0, 0, 255), Layer = nativeKeep };
+        differentTriangle.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+        {
+            new Hatch.BoundaryPath.Polyline(new[] { new XYZ(500, 300, 0), new XYZ(500, 350, 0), new XYZ(600, 300, 0) })
+        }));
+        native.Entities.Add(differentTriangle);
 
         CadDocument filtered = DwgRegression.Sheet();
         var marker = new Layer("REVIT-FILTER") { Color = new ACadSharp.Color(7) };
@@ -36,6 +44,9 @@ internal static class NativeGeometryRegression
             Layer = marker, Color = new ACadSharp.Color(201) });
         filtered.Entities.Add(new Line { StartPoint = new XYZ(360, 320, 0), EndPoint = new XYZ(450, 320, 0),
             Layer = marker, Color = new ACadSharp.Color(201) });
+        var filteredTriangle = (Hatch)linkedTriangle.Clone();
+        filteredTriangle.Layer = marker; filteredTriangle.Color = new ACadSharp.Color(201);
+        filtered.Entities.Add(filteredTriangle);
 
         string nativePath = Path.Combine(output, "nge-native-source.dwg");
         string filteredPath = Path.Combine(output, "nge-filter-source.dwg");
@@ -56,16 +67,79 @@ internal static class NativeGeometryRegression
         }, nativePath, output);
         CadDocument saved = DwgReader.Read(resultPath);
         Entity[] entities = DwgRegression.Walk(saved.ModelSpace).ToArray();
-        check(response.GeometrySource == "NativeGeometry" && response.NativeOverlayMatchedEntities == 2,
-            "NGE reports the native drawing as final geometry and transfers exact and fully covered classifications");
+        check(response.GeometrySource == "NativeGeometry" && response.NativeOverlayMatchedEntities == 3,
+            "NGE reports native geometry and transfers exact line, covered line and full-boundary hatch classifications");
         check(entities.OfType<Line>().Count(line => line.Layer.Name == "TYPE-FILTER") == 1,
             "Exact type-filter geometry is relayered on the native entity");
-        check(entities.Count(entity => entity.Layer.Name == "MATERIAL-FILTER") == 1
+        check(entities.Count(entity => entity.Layer.Name == "MATERIAL-FILTER") == 2
             && response.NativeOverlayUnmatchedMarkers >= 1,
-            "Collinear Part segments can classify one native line while Part-only geometry is not added");
+            "Collinear Part segments and an exact hatch classify native entities while Part-only geometry is not added");
         check(entities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-KEEP"),
             "Nearby native door/floor geometry is not captured by a non-exact material marker");
-        check(entities.OfType<Hatch>().Any(hatch => hatch.Color.R == 255 && hatch.Color.G == 0 && hatch.Color.B == 0),
-            "Native linked hatch remains even when the filtered drawing omits it");
+        check(entities.OfType<Hatch>().Count(hatch => hatch.Layer.Name == "MATERIAL-FILTER") == 1
+            && entities.OfType<Hatch>().Count(hatch => hatch.Layer.Name == "NATIVE-KEEP") == 1,
+            "Hatches with the same envelope but different full boundaries are never confused");
+
+        CadDocument duplicateNative = DwgRegression.Sheet(), duplicateFiltered = DwgRegression.Sheet();
+        var duplicateLayer = new Layer("NATIVE-KEEP"); duplicateNative.Layers.Add(duplicateLayer);
+        var duplicateMarker = new Layer("REVIT-FILTER"); duplicateFiltered.Layers.Add(duplicateMarker);
+        var duplicate = (Hatch)linkedTriangle.Clone(); duplicate.Layer = duplicateLayer;
+        duplicateNative.Entities.Add(duplicate); duplicateNative.Entities.Add((Hatch)duplicate.Clone());
+        var singleMarker = (Hatch)linkedTriangle.Clone(); singleMarker.Layer = duplicateMarker;
+        singleMarker.Color = new ACadSharp.Color(201); duplicateFiltered.Entities.Add(singleMarker);
+        string duplicateNativePath = Path.Combine(output, "nge-duplicate-native.dwg");
+        string duplicateFilteredPath = Path.Combine(output, "nge-duplicate-filtered.dwg");
+        string duplicateResultPath = Path.Combine(output, "nge-duplicate-result.dwg");
+        DwgWriter.Write(duplicateNativePath, duplicateNative); DwgWriter.Write(duplicateFilteredPath, duplicateFiltered);
+        try
+        {
+            new ManagedDwgProcessor().Run(new BridgeRequest
+            {
+                Operation = "Flatten", OutputPath = duplicateResultPath, FilterReferencePath = duplicateFilteredPath,
+                ColorRemaps = new() { new() { MarkerAci = 201, Layer = "MATERIAL-FILTER", Color = 4,
+                    RuleId = "material", RemapFills = true, SourceLayers = new() { "NATIVE-KEEP" } } }
+            }, duplicateNativePath, output);
+            check(false, "Ambiguous duplicate hatch classification must fail");
+        }
+        catch (InvalidDataException ex)
+        {
+            check(ex.Message.Contains("해치 1:1"), "Duplicate hatch failure explains strict one-to-one protection");
+            check(!File.Exists(duplicateResultPath), "Failed hatch matching never publishes a partial DWG");
+        }
+
+        CadDocument sharedNative = DwgRegression.Sheet(), sharedFiltered = DwgRegression.Sheet();
+        var sharedLayer = new Layer("NATIVE-KEEP"); sharedNative.Layers.Add(sharedLayer);
+        var sharedMarkerLayer = new Layer("REVIT-FILTER"); sharedFiltered.Layers.Add(sharedMarkerLayer);
+        var sharedBlock = new BlockRecord("SHARED-HATCH");
+        var sharedHatch = (Hatch)linkedTriangle.Clone(); sharedHatch.Layer = sharedLayer;
+        // Use local coordinates so the two block occurrences have different world signatures.
+        sharedHatch.Paths.Clear(); sharedHatch.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+        {
+            new Hatch.BoundaryPath.Polyline(new[] { XYZ.Zero, new XYZ(50, 50, 0), new XYZ(100, 0, 0) })
+        }));
+        sharedBlock.Entities.Add(sharedHatch);
+        sharedNative.Entities.Add(new Insert(sharedBlock));
+        sharedNative.Entities.Add(new Insert(sharedBlock) { InsertPoint = new XYZ(200, 0, 0) });
+        var oneOccurrence = (Hatch)sharedHatch.Clone(); oneOccurrence.Layer = sharedMarkerLayer;
+        oneOccurrence.Color = new ACadSharp.Color(201); sharedFiltered.Entities.Add(oneOccurrence);
+        string sharedNativePath = Path.Combine(output, "nge-shared-native.dwg");
+        string sharedFilteredPath = Path.Combine(output, "nge-shared-filtered.dwg");
+        string sharedResultPath = Path.Combine(output, "nge-shared-result.dwg");
+        DwgWriter.Write(sharedNativePath, sharedNative); DwgWriter.Write(sharedFilteredPath, sharedFiltered);
+        try
+        {
+            new ManagedDwgProcessor().Run(new BridgeRequest
+            {
+                Operation = "Flatten", OutputPath = sharedResultPath, FilterReferencePath = sharedFilteredPath,
+                ColorRemaps = new() { new() { MarkerAci = 201, Layer = "MATERIAL-FILTER", Color = 4,
+                    RuleId = "material", RemapFills = true, SourceLayers = new() { "NATIVE-KEEP" } } }
+            }, sharedNativePath, output);
+            check(false, "Partially matched shared hatch definition must fail");
+        }
+        catch (InvalidDataException ex)
+        {
+            check(ex.Message.Contains("공유 블록 정의"), "Shared hatch occurrence failure identifies unsafe partial relayering");
+            check(!File.Exists(sharedResultPath), "Shared-block hatch ambiguity never publishes a partial DWG");
+        }
     }
 }

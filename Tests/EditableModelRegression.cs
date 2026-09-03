@@ -24,31 +24,33 @@ internal static class EditableModelRegression
         foreach (var (file, scale) in new[] { (first, 100), (second, 200) })
         {
             var doc = DwgReader.Read(file);
-            check(!doc.Entities.OfType<Insert>().Any(), "No ordinary block reference in simple scaled sheet");
+            Entity[] all = DwgRegression.Walk(doc.ModelSpace).ToArray();
+            check(doc.Entities.OfType<Insert>().All(insert => insert.SpatialFilter != null),
+                "Only exact per-entity viewport clipping wrappers remain in a simple scaled sheet");
             near(doc.Header.ModelSpaceExtMax.X, 420 * scale, "Sheet width follows per-sheet scale");
             near(doc.Header.ModelSpaceExtMax.Y, 297 * scale, "Sheet height follows per-sheet scale");
-            var line = doc.Entities.OfType<Line>().Single(l => l.Layer.Name == "WALL");
+            var line = all.OfType<Line>().Single(l => l.Layer.Name == "WALL");
             near(line.StartPoint.DistanceFrom(line.EndPoint), 6000, "Both scales produce the same 6000 mm wall");
             near(line.StartPoint.X, 100 * scale - 3000, "Viewport center translation composed with sheet scale");
             near(line.StartPoint.Y, 100 * scale, "Viewport Y position");
-            var crossing = doc.Entities.OfType<Line>().Single(l => l.Layer.Name == "CROSSING");
+            var crossing = all.OfType<Line>().Single(l => l.Layer.Name == "CROSSING");
             near(crossing.StartPoint.DistanceFrom(crossing.EndPoint), 100 * scale, "Long line clipped to visible viewport, no hidden extension");
-            var paper = doc.Entities.OfType<Line>().Single(l => l.Layer.Name == "FRAME_DETAIL");
+            var paper = all.OfType<Line>().Single(l => l.Layer.Name == "FRAME_DETAIL");
             near(paper.StartPoint.X, 20 * scale, "Nonzero block origin respected before rotation and scale");
             near(paper.StartPoint.Y, 25 * scale, "Block origin Y");
             near(paper.EndPoint.X, 20 * scale, "Rotated endpoint X");
             near(paper.EndPoint.Y, 45 * scale, "Rotated endpoint Y");
             check(paper.Color.Index == 5, "ByBlock color resolved when block is removed");
-            var constant = doc.Entities.OfType<TextEntity>().Single(t => t.Value == "고정 도곽 속성");
+            var constant = all.OfType<TextEntity>().Single(t => t.Value == "고정 도곽 속성");
             near(constant.Height, 2 * scale, "Constant attribute is preserved as editable text");
-            check(!doc.Entities.OfType<TextEntity>().Any(t => t.Value == "숨김 속성"), "Hidden attribute remains hidden");
-            near(doc.Entities.OfType<MText>().Single().Height, 3 * scale, "Paper text height enlarged with frame");
-            var hatch = doc.Entities.OfType<Hatch>().Single();
+            check(!all.OfType<TextEntity>().Any(t => t.Value == "숨김 속성"), "Hidden attribute remains hidden");
+            near(all.OfType<MText>().Single().Height, 3 * scale, "Paper text height enlarged with frame");
+            var hatch = all.OfType<Hatch>().Single();
             var arc = (Hatch.BoundaryPath.Arc)hatch.Paths.Single().Edges.Single();
             near(arc.Radius, 100, "Hatch radius does not absorb translation");
             near(arc.Center.X, 100 * scale - 2000, "Hatch center transformed correctly");
             near(Math.Abs(arc.EndAngle - arc.StartAngle), 2 * Math.PI, "Full circular hatch stays closed");
-            var dim = doc.Entities.OfType<DimensionAligned>().Single();
+            var dim = all.OfType<DimensionAligned>().Single();
             near(dim.Measurement, 6000, "Dimension remains native at full size");
             near(dim.Style.LinearScaleFactor, 1, "Full-size dimension value is not multiplied by sheet scale");
             check(dim.Block.Entities.Count > 0, "Native dimension display definition retained");
@@ -63,12 +65,13 @@ internal static class EditableModelRegression
             var result = processor.MergePrepared(new BridgeRequest { Operation = "Merge", RevitSheet = true,
                 OutputPath = path, Direction = direction, MarginMm = gap }, memoryInputs, output);
             var doc = DwgReader.Read(path);
-            check(!doc.Entities.OfType<Insert>().Any(), "Merged set has no sheet container blocks");
+            check(doc.Entities.OfType<Insert>().All(insert => insert.SpatialFilter != null),
+                "Merged set has no sheet container blocks; only exact clipping wrappers remain");
             near(result.Placements[0].Width, 42000, "First sheet keeps 100-scale frame after merge");
             near(result.Placements[1].Width, 84000, "Second sheet keeps 200-scale frame after merge");
             if (direction == "Horizontal") near(result.Placements[1].X, 42000 + gap, "Horizontal gap measured after scaling");
             else near(result.Placements[0].Y - (result.Placements[1].Y + result.Placements[1].Height), gap, "Vertical gap measured after scaling");
-            check(doc.Entities.OfType<Line>().Count(l => l.Layer.Name == "WALL" && Math.Abs(l.StartPoint.DistanceFrom(l.EndPoint) - 6000) < 1e-4) == 2,
+            check(DwgRegression.Walk(doc.ModelSpace).OfType<Line>().Count(l => l.Layer.Name == "WALL" && Math.Abs(l.StartPoint.DistanceFrom(l.EndPoint) - 6000) < 1e-4) == 2,
                 "Merge preserves both real-size walls");
         }
         var mixed = Sheet(100);
@@ -77,8 +80,22 @@ internal static class EditableModelRegression
         string mixedPath = Convert(mixed, "mixed-views", out var mixedResult);
         near(mixedResult.ModelScale, 100, "Largest viewport determines mixed sheet scale");
         check(mixedResult.Warnings.Any(w => w.Contains("혼합 축척")), "Mixed-scale policy reported explicitly");
-        check(DwgReader.Read(mixedPath).Entities.OfType<Line>().Any(l => l.Layer.Name == "WALL" && Math.Abs(l.StartPoint.DistanceFrom(l.EndPoint) - 4000) < 1e-4),
+        check(DwgRegression.Walk(DwgReader.Read(mixedPath).ModelSpace).OfType<Line>().Any(l => l.Layer.Name == "WALL" && Math.Abs(l.StartPoint.DistanceFrom(l.EndPoint) - 4000) < 1e-4),
             "Smaller 1:50 viewport preserves relative magnification and clips to its 40 mm frame");
+        var concave = Sheet(100);
+        var concaveViewport = concave.PaperSpace.Entities.OfType<Viewport>().Last();
+        var concaveBoundary = new LwPolyline(new[]
+        {
+            new XY(50, 50), new XY(150, 50), new XY(150, 150), new XY(100, 100), new XY(50, 150)
+        }.Select(point => new LwPolyline.Vertex(point))) { IsClosed = true };
+        concave.PaperSpace.Entities.Add(concaveBoundary); concaveViewport.Boundary = concaveBoundary;
+        concaveViewport.Status |= ViewportStatusFlags.NonRectangularClipping;
+        string concavePath = Convert(concave, "concave-clip", out var concaveResult);
+        var concaveWrappers = DwgReader.Read(concavePath).Entities.OfType<Insert>()
+            .Where(insert => insert.SpatialFilter != null).ToArray();
+        check(concaveResult.BoundaryBlocksRetained > 0 && concaveWrappers.Length > 0
+            && concaveWrappers.All(insert => insert.SpatialFilter.BoundaryPoints.Count == 5),
+            "Every nonlinear entity under a concave viewport keeps the exact five-point clipping boundary");
         var mirrored = Sheet(100);
         var mirrorBlock = new BlockRecord("MIRRORED_LOGO");
         mirrorBlock.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(10, 0, 0) });
@@ -89,8 +106,9 @@ internal static class EditableModelRegression
         mirrored.PaperSpace.Entities.Add(new Insert(mirrorBlock) { Normal = -XYZ.AxisZ, InsertPoint = new XYZ(-20, 25, 0) });
         string mirrorPath = Convert(mirrored, "mirrored-solid", out _);
         var mirrorDoc = DwgReader.Read(mirrorPath);
-        check(!mirrorDoc.Entities.OfType<Insert>().Any(), "Mirrored line and solid hatch blocks also become individual entities");
-        var mirrorHatch = mirrorDoc.Entities.OfType<Hatch>().Single(h => Math.Abs(((Hatch.BoundaryPath.Arc)h.Paths[0].Edges[0]).Center.X - 1800) < 1e-4);
+        check(mirrorDoc.Entities.OfType<Insert>().All(insert => insert.SpatialFilter != null),
+            "Mirrored geometry is flattened, with only exact clipping wrappers retained");
+        var mirrorHatch = DwgRegression.Walk(mirrorDoc.ModelSpace).OfType<Hatch>().Single(h => Math.Abs(((Hatch.BoundaryPath.Arc)h.Paths[0].Edges[0]).Center.X - 1800) < 1e-4);
         near(((Hatch.BoundaryPath.Arc)mirrorHatch.Paths[0].Edges[0]).Center.Y, 2700, "Mirrored solid hatch center in world coordinates");
         near(mirrorHatch.Normal.Z, 1, "No second mirror caused by hatch OCS normal");
     }

@@ -152,6 +152,8 @@ public sealed partial class ManagedDwgProcessor
         }
 
         var nativeSignatures = new HashSet<string>(StringComparer.Ordinal);
+        var nativeHatches = new Dictionary<string, List<Hatch>>(StringComparer.Ordinal);
+        var nativeHatchOccurrences = new List<(Hatch Entity, string Signature)>();
         var assignments = new Dictionary<Entity, List<OverlayTarget>>();
         WalkWorld(native.ModelSpace, (entity, transform) =>
         {
@@ -159,6 +161,14 @@ public sealed partial class ManagedDwgProcessor
             string? signature = NativeSignature(entity, transform);
             if (signature == null) return;
             nativeSignatures.Add(signature);
+            if (entity is Hatch nativeHatch)
+            {
+                if (!nativeHatches.TryGetValue(signature, out List<Hatch>? hatchValues))
+                    nativeHatches[signature] = hatchValues = new();
+                hatchValues.Add(nativeHatch);
+                nativeHatchOccurrences.Add((nativeHatch, signature));
+                return;
+            }
             OverlayTarget? target;
             if ((!marks.TryGetValue(signature, out List<OverlayTarget>? exact)
                     || (target = ResolveTarget(exact.Where(candidate => AcceptsSourceLayer(candidate, entity.Layer.Name)))) == null)
@@ -169,6 +179,43 @@ public sealed partial class ManagedDwgProcessor
                 assignments[entity] = values = new();
             values.Add(target);
         });
+
+        // A bounding-envelope hatch key can silently transfer a material to a
+        // different hatch with the same extents. Hatch classification therefore
+        // requires a unique full-boundary signature and equal marker/native
+        // cardinality. Uncertainty is a hard failure, never a guessed assignment.
+        var hatchTargets = new Dictionary<string, OverlayTarget>(StringComparer.Ordinal);
+        foreach (var pair in marks.Where(pair => IsHatchSignature(pair.Key)))
+        {
+            OverlayTarget? target = ResolveTarget(pair.Value);
+            if (target == null)
+                throw HatchMatchFailure("동일 해치 형상에 서로 다른 우선 필터가 겹쳤습니다.", pair.Key,
+                    pair.Value.Count, nativeHatches.GetValueOrDefault(pair.Key)?.Count ?? 0);
+            int markerCount = pair.Value.Count(candidate => TargetKey(candidate) == TargetKey(target));
+            List<Hatch> eligible = nativeHatches.GetValueOrDefault(pair.Key)?
+                .Where(hatch => AcceptsSourceLayer(target, hatch.Layer.Name)).ToList() ?? new();
+            if (markerCount != eligible.Count)
+                throw HatchMatchFailure("분류 해치와 Native 해치의 개수가 달라 대상을 확정할 수 없습니다.", pair.Key,
+                    markerCount, eligible.Count);
+            hatchTargets[pair.Key] = target;
+            foreach (Hatch hatch in eligible)
+            {
+                if (!assignments.TryGetValue(hatch, out List<OverlayTarget>? values))
+                    assignments[hatch] = values = new();
+                values.Add(target);
+            }
+        }
+        foreach (var shared in nativeHatchOccurrences.GroupBy(occurrence => occurrence.Entity, ReferenceEqualityComparer.Instance))
+        {
+            var occurrenceTargets = shared.Select(occurrence => hatchTargets.TryGetValue(occurrence.Signature, out OverlayTarget? target)
+                    && AcceptsSourceLayer(target, occurrence.Entity.Layer.Name) ? TargetKey(target) : null).ToArray();
+            if (occurrenceTargets.Any(target => target != null)
+                && (occurrenceTargets.Any(target => target == null)
+                    || occurrenceTargets.Where(target => target != null).Distinct(StringComparer.Ordinal).Count() > 1))
+                throw HatchMatchFailure("공유 블록 정의의 일부 배치에만 필터가 일치하여 개별 재지정을 안전하게 적용할 수 없습니다.",
+                    string.Join(" / ", shared.Select(occurrence => occurrence.Signature).Distinct(StringComparer.Ordinal)),
+                    occurrenceTargets.Count(target => target != null), occurrenceTargets.Length);
+        }
 
         var counts = request.ColorRemaps.Select(map => map.RuleId)
             .Concat(request.MaterialAppearanceRemaps.Select(map => map.RuleId))
@@ -214,6 +261,10 @@ public sealed partial class ManagedDwgProcessor
 
     private static int TargetRank(OverlayTarget target) => target.Wrapping ? int.MaxValue : target.Priority;
     private static string TargetKey(OverlayTarget target) => target.Layer + "\u001f" + target.Color + "\u001f" + target.RuleId;
+    private static bool IsHatchSignature(string signature) => signature.StartsWith("H|", StringComparison.Ordinal);
+
+    private static InvalidDataException HatchMatchFailure(string reason, string signature, int markers, int natives) =>
+        new("Native 해치 1:1 매칭 실패: " + reason + $" 분류 {markers:N0}개 · Native {natives:N0}개 · 서명 {signature}");
 
     private static OverlayTarget? ResolveTarget(IEnumerable<OverlayTarget> source)
     {
@@ -316,17 +367,52 @@ public sealed partial class ManagedDwgProcessor
             return "P|" + polyline.IsClosed + "|" + N(polyline.Elevation) + "|" + (string.CompareOrdinal(forward, reverse) <= 0 ? forward : reverse);
         }
         if (entity is Hatch hatch)
-        {
-            BoundingBox box = hatch.GetBoundingBox();
-            string paths = string.Join(";", hatch.Paths.Select(path => string.Join(",", path.Edges.Select(edge => edge.Type.ToString()))));
-            return "H|" + hatch.IsSolid + "|" + hatch.Paths.Count + "|" + paths + "|"
-                + N(box.Min.X) + "," + N(box.Min.Y) + "," + N(box.Max.X) + "," + N(box.Max.Y);
-        }
+            return HatchSignature(hatch);
         if (entity is TextEntity text)
             return "T|" + P(text.InsertPoint) + "|" + N(text.Height) + "|" + N(text.Rotation) + "|" + text.Value;
         if (entity is MText multiline)
             return "M|" + P(multiline.InsertPoint) + "|" + N(multiline.Height) + "|" + N(multiline.Rotation) + "|" + multiline.Value;
         return null;
+    }
+
+    private static string HatchSignature(Hatch hatch)
+    {
+        static string N(double value)
+        {
+            if (value == 0) value = 0; // normalize negative zero
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+        static string P2(XY point) => N(point.X) + "," + N(point.Y);
+        static string P3(XYZ point) => N(point.X) + "," + N(point.Y) + "," + N(point.Z);
+        static string Values(IEnumerable<double> values) => string.Join(",", values.Select(N));
+        static string Points(IEnumerable<XY> values) => string.Join(";", values.Select(P2));
+        static string Points3(IEnumerable<XYZ> values) => string.Join(";", values.Select(P3));
+        static string Edge(Hatch.BoundaryPath.Edge edge) => edge switch
+        {
+            Hatch.BoundaryPath.Line line => "L:" + P2(line.Start) + ">" + P2(line.End),
+            Hatch.BoundaryPath.Arc arc => "A:" + P2(arc.Center) + "," + N(arc.Radius) + ","
+                + N(arc.StartAngle) + "," + N(arc.EndAngle) + "," + arc.CounterClockWise,
+            Hatch.BoundaryPath.Ellipse ellipse => "E:" + P2(ellipse.Center) + "," + P2(ellipse.MajorAxisEndPoint)
+                + "," + N(ellipse.MajorAxis) + "," + N(ellipse.MinorAxis) + "," + N(ellipse.RadiusRatio)
+                + "," + N(ellipse.Rotation) + "," + N(ellipse.StartAngle) + "," + N(ellipse.EndAngle)
+                + "," + ellipse.CounterClockWise,
+            Hatch.BoundaryPath.Polyline polyline => "P:" + polyline.IsClosed + "," + polyline.HasBulge + ","
+                + Points3(polyline.Vertices) + "|" + Values(polyline.Bulges),
+            Hatch.BoundaryPath.Spline spline => "S:" + spline.Degree + "," + spline.IsRational + "," + spline.IsPeriodic
+                + "|C:" + Points3(spline.ControlPoints) + "|K:" + Values(spline.Knots) + "|W:" + Values(spline.Weights)
+                + "|F:" + Points(spline.FitPoints) + "|T:" + P2(spline.StartTangent) + ">" + P2(spline.EndTangent),
+            _ => "U:" + edge.Type
+        };
+        static string Token(string? value) => (value?.Length ?? 0).ToString(CultureInfo.InvariantCulture) + ":" + value;
+
+        string paths = string.Join("||", hatch.Paths.Select(path => ((int)path.Flags).ToString(CultureInfo.InvariantCulture)
+            + ":" + path.IsPolyline + ":" + string.Join("|", path.Edges.Select(Edge))));
+        string pattern = hatch.Pattern == null ? "-" : Token(hatch.Pattern.Name) + "|" + Token(hatch.Pattern.Description)
+            + "|" + string.Join(";", hatch.Pattern.Lines.Select(line => N(line.Angle) + "," + P2(line.BasePoint)
+                + "," + P2(line.Offset) + "," + Values(line.DashLengths)));
+        return "H|" + hatch.IsSolid + "|" + hatch.IsDouble + "|" + (int)hatch.PatternType + "|" + (int)hatch.Style
+            + "|" + N(hatch.Elevation) + "|" + P3(hatch.Normal) + "|" + N(hatch.PatternAngle) + "|"
+            + N(hatch.PatternScale) + "|" + N(hatch.PixelSize) + "|" + Token(pattern) + "|" + Token(paths);
     }
 
     private static double NormalizeAngle(double value)
