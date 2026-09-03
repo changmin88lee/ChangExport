@@ -42,6 +42,12 @@ public sealed partial class ManagedDwgProcessor
                     .DistinctBy(s => s.Identity).ToArray();
                 method = "전체 패밀리·유형 이름 일치";
             }
+            FamilyBlockSource? sharedNameSource = SharedNameGeometrySource(matches);
+            if (sharedNameSource != null)
+            {
+                matches = new[] { sharedNameSource };
+                method = "동일 이름 후보 · 실제 형상 서명으로 분리";
+            }
             if (matches.Length != 1)
             {
                 if (matches.Length > 1 || (suffixes.Length > 0 && block.Name.Contains(" - ", StringComparison.Ordinal)))
@@ -56,6 +62,29 @@ public sealed partial class ManagedDwgProcessor
                 IsTitleBlock = source.IsTitleBlock, IsDetailGroup = source.IsDetailGroup };
             block.Name = token + Guid.NewGuid().ToString("N");
         }
+    }
+
+    private static FamilyBlockSource? SharedNameGeometrySource(IReadOnlyList<FamilyBlockSource> matches)
+    {
+        if (matches.Count < 2) return null;
+        FamilyBlockSource first = matches[0];
+        string labelKey = FamilyNameKey(first.Label), categoryKey = FamilyNameKey(first.Category);
+        // Only fixed loadable model families are safe to recover this way. The
+        // downstream deduplicator still compares the full local DWG geometry, so
+        // identically named host/link types with different graphics remain separate
+        // block definitions instead of being merged incorrectly.
+        if (labelKey.Length == 0 || categoryKey.Length == 0 || first.ExclusionReason.Length > 0
+            || first.IsTitleBlock || first.IsDetailGroup || first.SourceKind != "LoadableFamily") return null;
+        if (matches.Any(source => source.ExclusionReason.Length > 0 || source.IsTitleBlock || source.IsDetailGroup
+            || source.SourceKind != "LoadableFamily" || FamilyNameKey(source.Label) != labelKey
+            || FamilyNameKey(source.Category) != categoryKey)) return null;
+        return new FamilyBlockSource
+        {
+            Identity = "shared-name-geometry:" + Hash(categoryKey + "\0" + labelKey),
+            Label = first.Label,
+            Category = first.Category,
+            SourceKind = first.SourceKind
+        };
     }
 
     private static string FamilyNameKey(string name) => new(name.Where(char.IsLetterOrDigit).ToArray());
