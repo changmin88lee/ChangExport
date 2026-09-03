@@ -34,13 +34,6 @@ if (Test-Path -LiteralPath $sourceNotices) {
     }
 }
 
-$sourceData = Join-Path $root "Data"
-if (Test-Path -LiteralPath $sourceData) {
-    $installedData = Join-Path $installDirectory "Data"
-    New-Item -ItemType Directory -Path $installedData -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $sourceData "Company_Default.json") -Destination (Join-Path $installedData "Company_Default.json") -Force
-}
-
 $escapedAssembly = [System.Security.SecurityElement]::Escape($installedAssembly)
 $manifest = @"
 <?xml version="1.0" encoding="utf-8" standalone="no"?>

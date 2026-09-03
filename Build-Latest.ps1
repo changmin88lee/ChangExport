@@ -26,7 +26,10 @@ if (-not (Test-Path -LiteralPath $target)) {
 }
 
 New-Item -ItemType Directory -Path $latest -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $latest "Data") -Force | Out-Null
+$legacyData = Join-Path $latest "Data"
+if (Test-Path -LiteralPath $legacyData) {
+    Remove-Item -LiteralPath $legacyData -Recurse -Force
+}
 
 Copy-Item -LiteralPath $target -Destination (Join-Path $latest "ChangExport.dll") -Force
 Copy-Item -LiteralPath (Join-Path $root "Install.cmd") -Destination (Join-Path $latest $installFileName) -Force
@@ -35,7 +38,6 @@ Copy-Item -LiteralPath (Join-Path $root "Uninstall.cmd") -Destination (Join-Path
 Copy-Item -LiteralPath (Join-Path $root "Uninstall-Revit2026.ps1") -Destination (Join-Path $latest "Uninstall-Revit2026.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $root "VERSION") -Destination (Join-Path $latest "VERSION") -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination (Join-Path $latest "README.md") -Force
-Copy-Item -LiteralPath (Join-Path $root "Data\Company_Default.json") -Destination (Join-Path $latest "Data\Company_Default.json") -Force
 New-Item -ItemType Directory -Path (Join-Path $latest "ThirdParty") -Force | Out-Null
 foreach ($notice in @("ACadSharp-LICENSE.txt", "CSUtilities-LICENSE.txt")) {
     Copy-Item -LiteralPath (Join-Path $root "ThirdParty\$notice") -Destination (Join-Path $latest "ThirdParty\$notice") -Force
