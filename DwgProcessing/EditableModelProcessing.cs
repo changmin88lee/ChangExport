@@ -58,6 +58,8 @@ public sealed partial class ManagedDwgProcessor
                     PreserveNestedRevitFillAppearance(clone, parent, response, new HashSet<BlockRecord>());
                     var ready = PlaceFamily(clone.Block, new Transform(transform.Matrix * InsertTransform(clone).Matrix));
                     ready.MatchProperties(clone);
+                    if (clone.SpatialFilter is { } spatialFilter)
+                        ready.SpatialFilter = (SpatialFilter)spatialFilter.Clone();
                     CapturePreparedWideColors(ready, geometry);
                     output.Add(ready); return;
                 }

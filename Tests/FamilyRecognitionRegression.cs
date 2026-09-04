@@ -15,6 +15,7 @@ internal static class FamilyRecognitionRegression
     {
         Policy(check);
         Synthetic(output, check);
+        ClippedFamilyMerge(output, check);
         if (manifestPath != null) Real(output, manifestPath, check);
     }
 
@@ -101,6 +102,49 @@ internal static class FamilyRecognitionRegression
         PerformanceRegression.Compare(plain, exploded, check, normalizePeriodicAngles: true);
     }
 
+    private static void ClippedFamilyMerge(string output, Action<bool, string> check)
+    {
+        var doc = (CadDocument)typeof(EditableModelRegression).GetMethod("Sheet", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, new object[] { 100 })!;
+        var parking = new BlockRecord("주차면 - A-7001-평면");
+        parking.Entities.Add(new Line { StartPoint = XYZ.Zero, EndPoint = new XYZ(1000, 0, 0) });
+        var fill = new Hatch { IsSolid = true };
+        fill.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
+        {
+            new Hatch.BoundaryPath.Polyline(new[]
+            {
+                XYZ.Zero, new XYZ(1000, 0, 0), new XYZ(1000, 500, 0), new XYZ(0, 500, 0)
+            })
+        }));
+        parking.Entities.Add(fill);
+        doc.Entities.Add(new Insert(parking) { InsertPoint = new XYZ(1000, 1000, 0) });
+        // The second viewport sees the same model space but not this family. Its line
+        // is rejected while the hatch remains protected by an exact spatial filter.
+        doc.PaperSpace.Entities.Add(new Viewport { Center = new XYZ(250, 100, 0), Width = 100, Height = 100,
+            ViewHeight = 10000, ViewCenter = new XY(100000, 0), ViewDirection = XYZ.AxisZ, ActiveStatus = 1 });
+
+        var family = new FamilyBlockSource { Identity = "parking:A", Label = "주차면 - A",
+            NativePrefixes = new() { "주차면 - A-7001-" } };
+        string native = Path.Combine(output, "clipped-family-native.dwg");
+        DwgWriter.Write(native, doc);
+        var processor = new ManagedDwgProcessor();
+        var prepared = processor.Prepare(new BridgeRequest { RevitSheet = true, UseLayerColors = true,
+            FamilySources = new() { family } }, native);
+        check(prepared.Response.FamilyBlockReferences == 2 && prepared.Response.FamilyBlockDefinitions == 2,
+            "A mixed line/hatch family has one visible and one clipped hatch-only viewport occurrence");
+
+        string merged = Path.Combine(output, "clipped-family-merged.dwg");
+        processor.MergePrepared(new BridgeRequest { Operation = "Merge", RevitSheet = true, UseLayerColors = true,
+            OutputPath = merged }, new[] { prepared }, output);
+        var inserts = DwgReader.Read(merged).Entities.OfType<Insert>()
+            .Where(insert => insert.Block.Name.Contains("주차면 - A", StringComparison.Ordinal)).ToArray();
+        check(inserts.Length == 2 && inserts.All(insert => insert.SpatialFilter is { DisplayBoundary: true }),
+            "Prepared family viewport clips survive the final set placement instead of exposing hidden hatch-only copies");
+        check(inserts.Any(insert => insert.Block.Entities.OfType<Line>().Any())
+            && inserts.Any(insert => !insert.Block.Entities.OfType<Line>().Any() && insert.Block.Entities.OfType<Hatch>().Any()),
+            "Regression fixture retains both the visible full family and the clipped hatch-only occurrence");
+    }
+
     private static void Real(string output, string manifestPath, Action<bool, string> check)
     {
         using var json = JsonDocument.Parse(File.ReadAllText(manifestPath));
@@ -162,6 +206,27 @@ internal static class FamilyRecognitionRegression
         check(result.WideLineSkipped == 0, "Family grouping introduces no unsupported wide-line conversions");
         check(result.Success && result.PaperEntityCount == 0 && result.Placements.Count == 2, "Both sheets remain in model space");
         check(Math.Abs(result.Placements[1].X - result.Placements[0].Width) < 1e-5, "Zero gap and multi-scale preserved");
+
+        var parkingSources = JsonSerializer.Deserialize<List<FamilyBlockSource>>(
+            manifest.GetProperty("blockSources").GetRawText())!
+            .Where(source => source.Label.StartsWith("주차면 - ", StringComparison.Ordinal)).ToList();
+        string parkingSheet = Path.Combine(root, "native_001", "sheet.dwg");
+        var parkingPrepared = processor.Prepare(new BridgeRequest { RevitSheet = true, UseLayerColors = true,
+            FamilySources = parkingSources }, parkingSheet);
+        check(parkingPrepared.Response.FamilyBlockReferences == 14,
+            "Actual linked parking families produce seven visible and seven clipped viewport occurrences");
+        string parkingMerged = Path.Combine(output, "AA-461_parking-clips.dwg");
+        processor.MergePrepared(new BridgeRequest { Operation = "Merge", RevitSheet = true, UseLayerColors = true,
+            OutputPath = parkingMerged }, new[] { parkingPrepared }, output);
+        var parkingInserts = DwgReader.Read(parkingMerged).Entities.OfType<Insert>()
+            .Where(insert => insert.Block.Name.Contains("주차면 - ", StringComparison.Ordinal)).ToArray();
+        check(parkingInserts.Length == 14
+            && parkingInserts.All(insert => insert.SpatialFilter is { DisplayBoundary: true }),
+            "Actual linked parking family clips survive final set placement without exposing hatch-only copies");
+        check(parkingInserts.Count(insert => insert.Block.Entities.OfType<Line>().Any()) == 7
+            && parkingInserts.Count(insert => !insert.Block.Entities.OfType<Line>().Any()
+                && insert.Block.Entities.OfType<Hatch>().Any()) == 7,
+            "Actual parking fixture retains seven full families and seven safely clipped hatch-only occurrences");
         check(hashes.All(p => Hash(p.Key) == p.Value), "Original DWGs untouched");
     }
 
