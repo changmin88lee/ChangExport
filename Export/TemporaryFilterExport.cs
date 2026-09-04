@@ -10,6 +10,15 @@ namespace ChangExport.Export;
 /// <summary>Applies export-only overrides to independent copies. No source view is edited.</summary>
 internal static class TemporaryFilterExport
 {
+    /// <summary>
+    /// Revit compound layers are ordered exterior-to-interior for walls and
+    /// top-to-bottom for floors. A shared material boundary therefore belongs
+    /// to the layer on the interior/bottom side, which has the larger index.
+    /// Keep priorities positive because zero means "not a material boundary"
+    /// in the managed DWG stage.
+    /// </summary>
+    internal static int CompoundLayerBoundaryPriority(int layerIndex) => Math.Max(0, layerIndex) + 1;
+
     internal sealed class Result
     {
         public string Drawing { get; set; } = "";
@@ -75,16 +84,6 @@ internal static class TemporaryFilterExport
         foreach (var rule in rules) Register("type:" + rule.RuleId, rule.Layer, rule.Color, rule.CutLayer, rule.CutColor, rule.RuleId, false, 0);
         foreach (var rule in materialRules) result.MatchedElements.TryAdd(rule.RuleId, 0);
         result.TimingsMs["setup"] = phaseClock.Elapsed.TotalMilliseconds;
-        static int FunctionPriority(int value) => (MaterialFunctionAssignment)value switch
-        {
-            MaterialFunctionAssignment.Finish1 => 700,
-            MaterialFunctionAssignment.Finish2 => 600,
-            MaterialFunctionAssignment.Structure or MaterialFunctionAssignment.StructuralDeck => 500,
-            MaterialFunctionAssignment.Substrate => 400,
-            MaterialFunctionAssignment.Insulation => 300,
-            MaterialFunctionAssignment.Membrane => 200,
-            _ => 100
-        };
         void RestrictToSourceCategory((Color Projection, Color Cut) marker, Element sourceElement)
         {
             if (sourceElement.Category == null) return;
@@ -155,9 +154,9 @@ internal static class TemporaryFilterExport
             var layers = structure.GetLayers();
             var selected = Enumerable.Range(0, layers.Count)
                 .Where(structure.ParticipatesInWrapping)
-                .Select(index => (Layer: layers[index], Rule: materialIndex.GetValueOrDefault(layers[index].MaterialId)))
+                .Select(index => (Index: index, Layer: layers[index], Rule: materialIndex.GetValueOrDefault(layers[index].MaterialId)))
                 .Where(item => item.Rule != null)
-                .OrderByDescending(item => FunctionPriority((int)item.Layer.Function))
+                .OrderByDescending(item => item.Index)
                 .FirstOrDefault();
             if (selected.Rule is { } material)
             {
@@ -383,7 +382,8 @@ internal static class TemporaryFilterExport
                                     ?? materialParameter?.AsValueString() ?? "";
                                 materialRulesByName.TryGetValue(materialName, out materialRule);
                             }
-                            priority = FunctionPriority(part.get_Parameter(BuiltInParameter.DPART_LAYER_FUNCTION)?.AsInteger() ?? 0);
+                            int layerIndex = part.get_Parameter(BuiltInParameter.DPART_LAYER_INDEX)?.AsInteger() ?? 0;
+                            priority = CompoundLayerBoundaryPriority(layerIndex);
                         }
                     }
                     (Color Projection, Color Cut) marker;

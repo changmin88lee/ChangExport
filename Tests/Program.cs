@@ -137,8 +137,19 @@ internal static class Program
         var resultTypes = resultDoc.BlockRecords.SelectMany(block => block.Entities).GroupBy(entity => entity.ObjectName)
             .ToDictionary(group => group.Key, group => group.Count());
         Check(result.GeometrySource == "NativeGeometry", "Actual Revit NGE run reports native geometry");
-        Check(baselineTypes.OrderBy(pair => pair.Key).SequenceEqual(resultTypes.OrderBy(pair => pair.Key)),
-            "Actual Revit NGE output retains the native entity-type inventory");
+        Check(baselineTypes.Where(pair => pair.Key != "LINE").OrderBy(pair => pair.Key)
+                .SequenceEqual(resultTypes.Where(pair => pair.Key != "LINE").OrderBy(pair => pair.Key))
+            && resultTypes.GetValueOrDefault("LINE") >= baselineTypes.GetValueOrDefault("LINE"),
+            "Actual Revit NGE output retains native non-line entities and only permits classified line splitting");
+        static double LineLength(ACadSharp.CadDocument document) => DwgRegression.Walk(document.ModelSpace).OfType<ACadSharp.Entities.Line>()
+            .Sum(line =>
+            {
+                double x = line.EndPoint.X - line.StartPoint.X, y = line.EndPoint.Y - line.StartPoint.Y,
+                    z = line.EndPoint.Z - line.StartPoint.Z;
+                return Math.Sqrt(x * x + y * y + z * z);
+            });
+        Check(Math.Abs(LineLength(baselineDoc) - LineLength(resultDoc)) < 1e-5,
+            "Actual Revit partial classification preserves total native line geometry");
         Check(result.CustomRuleEntityCounts.Values.Sum() > 0 && result.NativeOverlayMatchedEntities > 0,
             "Actual Revit filter classifications reach exact native entities");
         Check(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(nativePath))) == nativeHash

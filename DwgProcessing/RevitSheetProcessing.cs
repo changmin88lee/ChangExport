@@ -572,7 +572,7 @@ public sealed partial class ManagedDwgProcessor
         if (response.FilterLowerGraphicsSkipped > 0)
             response.Warnings.Add($"하부 표현 보호: Beyond/Underlay 선 {response.FilterLowerGraphicsSkipped:N0}개는 유형·재료 필터를 적용하지 않았습니다.");
         if (response.MaterialBoundaryDuplicatesRemoved > 0)
-            response.Warnings.Add($"복합재료 공유 경계: 돌림마감·재료 우선순위에 따라 완전/부분 중복선 {response.MaterialBoundaryDuplicatesRemoved:N0}개를 정리했습니다.");
+            response.Warnings.Add($"복합재료 공유 경계: 돌림마감·내부측 재료 우선순위에 따라 완전/부분 중복선 {response.MaterialBoundaryDuplicatesRemoved:N0}개를 정리했습니다.");
         foreach (var map in request.ColorRemaps)
             response.Warnings.Add($"필터 레이어 '{map.Layer}' / ACI {map.Color} · DWG 객체 {counts[map.MarkerAci]:N0}개 반영");
         if (response.LinkedMaterialFillsRemapped > 0)

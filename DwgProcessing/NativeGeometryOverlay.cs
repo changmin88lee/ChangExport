@@ -125,7 +125,7 @@ public sealed partial class ManagedDwgProcessor
         var marks = new Dictionary<string, List<OverlayTarget>>(StringComparer.Ordinal);
         var lineMarks = new Dictionary<string, List<OverlayLine>>(StringComparer.Ordinal);
         int classifiedOccurrences = 0;
-        WalkWorld(classified.ModelSpace, (entity, transform) =>
+        WalkWorld(classified.ModelSpace, (entity, transform, _) =>
         {
             check();
             if (!targets.TryGetValue(entity.Layer.Name, out OverlayTarget? target)) return;
@@ -155,7 +155,9 @@ public sealed partial class ManagedDwgProcessor
         var nativeHatches = new Dictionary<string, List<Hatch>>(StringComparer.Ordinal);
         var nativeHatchOccurrences = new List<(Hatch Entity, string Signature)>();
         var assignments = new Dictionary<Entity, List<OverlayTarget>>();
-        WalkWorld(native.ModelSpace, (entity, transform) =>
+        var lineOccurrences = new Dictionary<Line, List<List<OverlayPiece>>>(ReferenceEqualityComparer.Instance);
+        var lineOwners = new Dictionary<Line, BlockRecord>(ReferenceEqualityComparer.Instance);
+        WalkWorld(native.ModelSpace, (entity, transform, owner) =>
         {
             check();
             string? signature = NativeSignature(entity, transform);
@@ -169,12 +171,19 @@ public sealed partial class ManagedDwgProcessor
                 nativeHatchOccurrences.Add((nativeHatch, signature));
                 return;
             }
+            if (entity is Line nativeEntity && WorldLine(entity, transform) is { } nativeLine)
+            {
+                IReadOnlyList<OverlayLine> candidates = lineMarks.TryGetValue(nativeLine.Key, out List<OverlayLine>? lineValues)
+                    ? lineValues : Array.Empty<OverlayLine>();
+                if (!lineOccurrences.TryGetValue(nativeEntity, out List<List<OverlayPiece>>? occurrences))
+                    lineOccurrences[nativeEntity] = occurrences = new();
+                occurrences.Add(CoveredLinePieces(nativeLine, candidates, entity.Layer.Name));
+                lineOwners.TryAdd(nativeEntity, owner);
+                return;
+            }
             OverlayTarget? target;
-            if ((!marks.TryGetValue(signature, out List<OverlayTarget>? exact)
-                    || (target = ResolveTarget(exact.Where(candidate => AcceptsSourceLayer(candidate, entity.Layer.Name)))) == null)
-                && (entity is not Line || WorldLine(entity, transform) is not { } nativeLine
-                    || !lineMarks.TryGetValue(nativeLine.Key, out List<OverlayLine>? candidates)
-                    || (target = CoveredLineTarget(nativeLine.Start, nativeLine.End, candidates, entity.Layer.Name)) == null)) return;
+            if (!marks.TryGetValue(signature, out List<OverlayTarget>? exact)
+                || (target = ResolveTarget(exact.Where(candidate => AcceptsSourceLayer(candidate, entity.Layer.Name)))) == null) return;
             if (!assignments.TryGetValue(entity, out List<OverlayTarget>? values))
                 assignments[entity] = values = new();
             values.Add(target);
@@ -213,14 +222,49 @@ public sealed partial class ManagedDwgProcessor
                 && (occurrenceTargets.Any(target => target == null)
                     || occurrenceTargets.Where(target => target != null).Distinct(StringComparer.Ordinal).Count() > 1))
                 throw HatchMatchFailure("공유 블록 정의의 일부 배치에만 필터가 일치하여 개별 재지정을 안전하게 적용할 수 없습니다.",
-                    string.Join(" / ", shared.Select(occurrence => occurrence.Signature).Distinct(StringComparer.Ordinal)),
-                    occurrenceTargets.Count(target => target != null), occurrenceTargets.Length);
+                     string.Join(" / ", shared.Select(occurrence => occurrence.Signature).Distinct(StringComparer.Ordinal)),
+                     occurrenceTargets.Count(target => target != null), occurrenceTargets.Length);
+        }
+
+        int sharedAmbiguous = 0, partialLinesSplit = 0;
+        foreach (var pair in lineOccurrences)
+        {
+            List<List<OverlayPiece>> occurrences = pair.Value;
+            var variants = occurrences.Select(PieceKey).Distinct(StringComparer.Ordinal).ToList();
+            if (variants.Count != 1)
+            {
+                sharedAmbiguous += occurrences.Count;
+                continue;
+            }
+            List<OverlayPiece> pieces = occurrences[0];
+            if (!pieces.Any(piece => piece.Target != null)) continue;
+            if (pieces.Count == 1 && pieces[0].Target is { } whole)
+            {
+                assignments[pair.Key] = new() { whole };
+                continue;
+            }
+            if (!lineOwners.TryGetValue(pair.Key, out BlockRecord? owner) || !owner.Entities.Remove(pair.Key))
+            {
+                sharedAmbiguous += occurrences.Count;
+                continue;
+            }
+            XYZ originalStart = pair.Key.StartPoint, originalEnd = pair.Key.EndPoint;
+            foreach (OverlayPiece piece in pieces)
+            {
+                if (piece.End - piece.Start <= 1e-9) continue;
+                var clone = (Line)pair.Key.Clone();
+                clone.StartPoint = originalStart + (originalEnd - originalStart) * piece.Start;
+                clone.EndPoint = originalStart + (originalEnd - originalStart) * piece.End;
+                owner.Entities.Add(clone);
+                if (piece.Target != null) assignments[clone] = new() { piece.Target };
+            }
+            partialLinesSplit++;
         }
 
         var counts = request.ColorRemaps.Select(map => map.RuleId)
             .Concat(request.MaterialAppearanceRemaps.Select(map => map.RuleId))
             .Distinct(StringComparer.Ordinal).ToDictionary(rule => rule, _ => 0, StringComparer.Ordinal);
-        int sharedAmbiguous = 0, applied = 0;
+        int applied = 0;
         foreach (var pair in assignments)
         {
             OverlayTarget? selected = ResolveTarget(pair.Value);
@@ -244,12 +288,15 @@ public sealed partial class ManagedDwgProcessor
         response.NativeOverlayMatchedEntities = applied;
         response.NativeOverlayUnmatchedMarkers = unmatched;
         response.NativeOverlayAmbiguousMarkers = ambiguous + sharedAmbiguous;
+        response.NativeOverlayPartialLinesSplit = partialLinesSplit;
         response.CustomRuleEntityCounts = counts;
         foreach (var group in counts)
             response.Warnings.Add($"Native 필터 레이어 · 규칙 {group.Key} · 원본 DWG 객체 {group.Value:N0}개 반영");
         if (unmatched > 0)
             response.Warnings.Add($"Native 형상 보호: 임시 분류 객체 {unmatched:N0}개는 Native와 1:1 동일 형상이 아닙니다. "
-                + "같은 직선의 전체 피복 조건을 통과한 선은 분류에만 사용하고, 임시 객체 자체는 최종 DWG에 추가하지 않았습니다.");
+                + "같은 직선에서 명확히 일치하는 구간은 분류에만 사용하고, 임시 객체 자체는 최종 DWG에 추가하지 않았습니다.");
+        if (partialLinesSplit > 0)
+            response.Warnings.Add($"Native 부분 재료 경계: Part와 명확히 일치하는 구간만 반영하기 위해 원본 직선 {partialLinesSplit:N0}개를 안전하게 분할했습니다.");
         if (response.NativeOverlayAmbiguousMarkers > 0)
             response.Warnings.Add($"Native 오분류 보호: 동일 형상에 서로 다른 필터가 겹친 판정 {response.NativeOverlayAmbiguousMarkers:N0}개는 재지정하지 않았습니다.");
         foreach (var expected in request.ExpectedRuleMatches.Where(pair => pair.Value > 0))
@@ -278,34 +325,61 @@ public sealed partial class ManagedDwgProcessor
     private static bool AcceptsSourceLayer(OverlayTarget target, string layer) => target.SourceLayers.Count == 0
         || target.SourceLayers.Any(candidate => RevitDwgLayerNames.Equivalent(candidate, layer));
 
-    private static OverlayTarget? CoveredLineTarget(double nativeStart, double nativeEnd, IReadOnlyList<OverlayLine> lines, string nativeLayer)
+    private static List<OverlayPiece> CoveredLinePieces(OverlayWorldLine native, IReadOnlyList<OverlayLine> lines, string nativeLayer)
     {
         const double tolerance = 1e-5;
-        var clipped = lines.Where(line => line.End > nativeStart + tolerance && line.Start < nativeEnd - tolerance)
-            .Select(line => new OverlayLine(Math.Max(nativeStart, line.Start), Math.Min(nativeEnd, line.End), line.Target)).ToList();
-        if (clipped.Count == 0) return null;
-        var points = clipped.SelectMany(line => new[] { line.Start, line.End }).Append(nativeStart).Append(nativeEnd)
+        var clipped = lines.Where(line => line.End > native.Start + tolerance && line.Start < native.End - tolerance)
+            .Select(line => new OverlayLine(Math.Max(native.Start, line.Start), Math.Min(native.End, line.End), line.Target)).ToList();
+        if (clipped.Count == 0) return new() { new OverlayPiece(0, 1, null) };
+        var points = clipped.SelectMany(line => new[] { line.Start, line.End }).Append(native.Start).Append(native.End)
             .OrderBy(value => value).ToList();
         var distinct = new List<double>();
         foreach (double point in points)
             if (distinct.Count == 0 || Math.Abs(point - distinct[^1]) > tolerance) distinct.Add(point);
-        var selected = new List<OverlayTarget>();
+        var pieces = new List<OverlayPiece>();
+        double length = native.End - native.Start;
+        double Parameter(double value) => native.Forward
+            ? (value - native.Start) / length
+            : (native.End - value) / length;
         for (int index = 1; index < distinct.Count; index++)
         {
             double start = distinct[index - 1], end = distinct[index];
-            if (end - start <= tolerance || end <= nativeStart + tolerance || start >= nativeEnd - tolerance) continue;
-            double middle = (Math.Max(start, nativeStart) + Math.Min(end, nativeEnd)) / 2;
+            if (end - start <= tolerance || end <= native.Start + tolerance || start >= native.End - tolerance) continue;
+            start = Math.Max(start, native.Start); end = Math.Min(end, native.End);
+            double middle = (start + end) / 2;
             OverlayTarget? target = ResolveTarget(clipped.Where(line => line.Start <= middle + tolerance && line.End >= middle - tolerance
                     && AcceptsSourceLayer(line.Target, nativeLayer)).Select(line => line.Target));
-            if (target == null) return null;
-            selected.Add(target);
+            double first = Parameter(start), second = Parameter(end);
+            pieces.Add(new OverlayPiece(Math.Min(first, second), Math.Max(first, second), target));
         }
-        if (selected.Count == 0 || distinct.First() > nativeStart + tolerance || distinct.Last() < nativeEnd - tolerance) return null;
-        OverlayTarget? result = ResolveTarget(selected);
-        return result != null && selected.All(target => TargetKey(target) == TargetKey(result)) ? result : null;
+        if (pieces.Count == 0) return new() { new OverlayPiece(0, 1, null) };
+        bool divided = pieces.Any(piece => piece.Target == null)
+            || pieces.Where(piece => piece.Target != null).Select(piece => TargetKey(piece.Target!))
+                .Distinct(StringComparer.Ordinal).Skip(1).Any();
+        if (divided)
+            pieces = pieces.Select(piece => piece.Target is { RemapFills: false, Wrapping: false }
+                ? piece with { Target = null } : piece).ToList();
+        var merged = new List<OverlayPiece>();
+        foreach (OverlayPiece piece in pieces.OrderBy(piece => piece.Start))
+        {
+            if (merged.Count > 0 && Math.Abs(merged[^1].End - piece.Start) <= 1e-9
+                && SameTarget(merged[^1].Target, piece.Target))
+                merged[^1] = merged[^1] with { End = piece.End };
+            else merged.Add(piece);
+        }
+        return merged;
     }
 
-    private static (string Key, double Start, double End)? WorldLine(Entity source, Transform transform)
+    private static bool SameTarget(OverlayTarget? left, OverlayTarget? right) => left == null || right == null
+        ? left == null && right == null
+        : TargetKey(left) == TargetKey(right);
+
+    private static string PieceKey(IEnumerable<OverlayPiece> pieces) => string.Join("|", pieces.Select(piece =>
+        Math.Round(piece.Start, 8).ToString("R", CultureInfo.InvariantCulture) + ":"
+        + Math.Round(piece.End, 8).ToString("R", CultureInfo.InvariantCulture) + ":"
+        + (piece.Target == null ? "-" : TargetKey(piece.Target))));
+
+    private static OverlayWorldLine? WorldLine(Entity source, Transform transform)
     {
         if (source is not Line) return null;
         Entity clone = (Entity)source.Clone();
@@ -318,13 +392,14 @@ public sealed partial class ManagedDwgProcessor
         double x = dx / length, y = dy / length;
         if (x < -Epsilon || (Math.Abs(x) < Epsilon && y < 0)) { x = -x; y = -y; }
         double offset = -y * line.StartPoint.X + x * line.StartPoint.Y;
-        double start = x * line.StartPoint.X + y * line.StartPoint.Y;
-        double end = x * line.EndPoint.X + y * line.EndPoint.Y;
+        double first = x * line.StartPoint.X + y * line.StartPoint.Y;
+        double second = x * line.EndPoint.X + y * line.EndPoint.Y;
         static string N(double value) => Math.Round(value, 5).ToString("R", CultureInfo.InvariantCulture);
-        return (N(x) + "|" + N(y) + "|" + N(offset) + "|" + N(line.StartPoint.Z), Math.Min(start, end), Math.Max(start, end));
+        return new OverlayWorldLine(N(x) + "|" + N(y) + "|" + N(offset) + "|" + N(line.StartPoint.Z),
+            Math.Min(first, second), Math.Max(first, second), first <= second);
     }
 
-    private static void WalkWorld(BlockRecord block, Action<Entity, Transform> visit,
+    private static void WalkWorld(BlockRecord block, Action<Entity, Transform, BlockRecord> visit,
         Transform? transform = null, int depth = 0)
     {
         if (depth > 64) throw new InvalidDataException("Native 필터 전사 중 블록 깊이가 안전 범위를 초과했습니다.");
@@ -335,9 +410,9 @@ public sealed partial class ManagedDwgProcessor
             {
                 Transform child = new(current.Matrix * InsertTransform(insert).Matrix);
                 WalkWorld(insert.Block, visit, child, depth + 1);
-                foreach (AttributeEntity attribute in insert.Attributes) visit(attribute, current);
+                foreach (AttributeEntity attribute in insert.Attributes) visit(attribute, current, block);
             }
-            else visit(entity, current);
+            else visit(entity, current, block);
         }
     }
 
@@ -424,4 +499,6 @@ public sealed partial class ManagedDwgProcessor
     private sealed record OverlayTarget(string Layer, int Color, string RuleId,
         int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers);
     private sealed record OverlayLine(double Start, double End, OverlayTarget Target);
+    private sealed record OverlayWorldLine(string Key, double Start, double End, bool Forward);
+    private sealed record OverlayPiece(double Start, double End, OverlayTarget? Target);
 }

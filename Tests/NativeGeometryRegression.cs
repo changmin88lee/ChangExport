@@ -16,6 +16,7 @@ internal static class NativeGeometryRegression
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 300, 0), EndPoint = new XYZ(450, 300, 0), Layer = nativeType });
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 305, 0), EndPoint = new XYZ(450, 305, 0), Layer = nativeKeep });
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 320, 0), EndPoint = new XYZ(450, 320, 0), Layer = nativeKeep });
+        native.Entities.Add(new Line { StartPoint = new XYZ(300, 340, 0), EndPoint = new XYZ(450, 340, 0), Layer = nativeKeep });
         var linkedTriangle = new Hatch { IsSolid = true, Color = new ACadSharp.Color(255, 0, 0), Layer = nativeKeep };
         linkedTriangle.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
         {
@@ -44,6 +45,9 @@ internal static class NativeGeometryRegression
             Layer = marker, Color = new ACadSharp.Color(201) });
         filtered.Entities.Add(new Line { StartPoint = new XYZ(360, 320, 0), EndPoint = new XYZ(450, 320, 0),
             Layer = marker, Color = new ACadSharp.Color(201) });
+        // A compound Part can cover only one interval of a longer native wall line.
+        filtered.Entities.Add(new Line { StartPoint = new XYZ(300, 340, 0), EndPoint = new XYZ(360, 340, 0),
+            Layer = marker, Color = new ACadSharp.Color(201) });
         var filteredTriangle = (Hatch)linkedTriangle.Clone();
         filteredTriangle.Layer = marker; filteredTriangle.Color = new ACadSharp.Color(201);
         filtered.Entities.Add(filteredTriangle);
@@ -67,13 +71,21 @@ internal static class NativeGeometryRegression
         }, nativePath, output);
         CadDocument saved = DwgReader.Read(resultPath);
         Entity[] entities = DwgRegression.Walk(saved.ModelSpace).ToArray();
-        check(response.GeometrySource == "NativeGeometry" && response.NativeOverlayMatchedEntities == 3,
-            "NGE reports native geometry and transfers exact line, covered line and full-boundary hatch classifications");
+        check(response.GeometrySource == "NativeGeometry" && response.NativeOverlayMatchedEntities == 4
+            && response.NativeOverlayPartialLinesSplit == 1,
+            "NGE transfers exact, fully covered, partially covered and full-boundary hatch classifications");
         check(entities.OfType<Line>().Count(line => line.Layer.Name == "TYPE-FILTER") == 1,
             "Exact type-filter geometry is relayered on the native entity");
-        check(entities.Count(entity => entity.Layer.Name == "MATERIAL-FILTER") == 2
+        check(entities.Count(entity => entity.Layer.Name == "MATERIAL-FILTER") == 3
             && response.NativeOverlayUnmatchedMarkers >= 1,
-            "Collinear Part segments and an exact hatch classify native entities while Part-only geometry is not added");
+            "Collinear Part segments, a partial interval and an exact hatch classify only native geometry");
+        check(entities.OfType<Line>().Any(line => line.Layer.Name == "MATERIAL-FILTER"
+                && Math.Abs(line.StartPoint.Y - 340) < 1e-8 && Math.Abs(line.StartPoint.X - 300) < 1e-8
+                && Math.Abs(line.EndPoint.X - 360) < 1e-8)
+            && entities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-KEEP"
+                && Math.Abs(line.StartPoint.Y - 340) < 1e-8 && Math.Abs(line.StartPoint.X - 360) < 1e-8
+                && Math.Abs(line.EndPoint.X - 450) < 1e-8),
+            "A partially covered native wall line is split only at the unambiguous Part boundary");
         check(entities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-KEEP"),
             "Nearby native door/floor geometry is not captured by a non-exact material marker");
         check(entities.OfType<Hatch>().Count(hatch => hatch.Layer.Name == "MATERIAL-FILTER") == 1

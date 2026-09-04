@@ -142,6 +142,7 @@ namespace ChangExport.DwgProcessing
         public int NativeOverlayMatchedEntities { get; set; }
         public int NativeOverlayUnmatchedMarkers { get; set; }
         public int NativeOverlayAmbiguousMarkers { get; set; }
+        public int NativeOverlayPartialLinesSplit { get; set; }
         public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }
         public int WideLineSkipped { get; set; }
