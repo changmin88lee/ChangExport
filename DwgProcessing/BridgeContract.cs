@@ -78,6 +78,9 @@ namespace ChangExport.DwgProcessing
         // Optional native category-layer gate. Material Part markers may only
         // classify native entities that came from the same Revit source category.
         public List<string> SourceLayers { get; set; } = new();
+        // Ownership-only compound Part marker. It competes by the real compound
+        // layer index but never changes the selected Native entity's layer.
+        public bool PreserveNative { get; set; }
         // Diagnostic-only provenance. These fields never participate in layer
         // selection; they explain which Revit compound layers shared a marker.
         public List<string> DiagnosticSourceCategories { get; set; } = new();
@@ -180,6 +183,7 @@ namespace ChangExport.DwgProcessing
         public int BoundaryPriority { get; set; }
         public bool RemapFills { get; set; }
         public bool Wrapping { get; set; }
+        public bool PreserveNative { get; set; }
         public int ExpectedRevitMatches { get; set; }
         public List<string> SourceLayers { get; set; } = new();
         public List<string> SourceCategories { get; set; } = new();
@@ -202,6 +206,7 @@ namespace ChangExport.DwgProcessing
         public int FullLineAssignments { get; set; }
         public int PartialLineAssignments { get; set; }
         public int AppliedEntities { get; set; }
+        public int PreservedEntities { get; set; }
         public Dictionary<string, int> MarkerEntityTypes { get; set; } = new();
         public Dictionary<string, int> CandidateNativeLayers { get; set; } = new();
         public Dictionary<string, int> RejectedNativeLayers { get; set; } = new();

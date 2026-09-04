@@ -66,19 +66,19 @@ internal static class TemporaryFilterExport
         var markers = new Dictionary<string, (Color Projection, Color Cut)>();
         var remapsByRgb = new Dictionary<int, ColorLayerRemap>();
         (Color Projection, Color Cut) Register(string key, string projectionLayer, int projectionColor,
-            string cutLayer, int cutColor, string ruleId, bool fills, int priority)
+            string cutLayer, int cutColor, string ruleId, bool fills, int priority, bool preserveNative = false)
         {
             if (markers.TryGetValue(key, out var existing)) return existing;
             if (available.Count < 2) throw new InvalidOperationException("기존 도면 색상과 충돌하지 않는 필터 식별색이 부족합니다. 원본 출력은 보존했습니다.");
             int projection = available.Dequeue(), cut = available.Dequeue();
             var pair = (ToRevit(projection), ToRevit(cut)); markers[key] = pair;
             var projectionMap = new ColorLayerRemap { MarkerAci = projection, Layer = projectionLayer, Color = projectionColor,
-                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority };
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority, PreserveNative = preserveNative };
             var cutMap = new ColorLayerRemap { MarkerAci = cut, Layer = cutLayer, Color = cutColor,
-                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority };
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority, PreserveNative = preserveNative };
             result.Remaps.Add(projectionMap); result.Remaps.Add(cutMap);
             remapsByRgb[Rgb(projection)] = projectionMap; remapsByRgb[Rgb(cut)] = cutMap;
-            result.MatchedElements.TryAdd(ruleId, 0);
+            if (!preserveNative) result.MatchedElements.TryAdd(ruleId, 0);
             return pair;
         }
         foreach (var rule in rules) Register("type:" + rule.RuleId, rule.Layer, rule.Color, rule.CutLayer, rule.CutColor, rule.RuleId, false, 0);
@@ -90,6 +90,48 @@ internal static class TemporaryFilterExport
             var sourceLayers = rows.Where(row => !row.IsCustom
                     && (row.CategoryId == sourceElement.Category.Id.Value
                         || row.Category.Equals(sourceElement.Category.Name, StringComparison.OrdinalIgnoreCase)))
+                .SelectMany(row => new[] { row.Layer, row.CutLayer }).Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (Color color in new[] { marker.Projection, marker.Cut })
+            {
+                int rgb = (color.Red << 16) | (color.Green << 8) | color.Blue;
+                if (!remapsByRgb.TryGetValue(rgb, out ColorLayerRemap? map)) continue;
+                foreach (string layer in sourceLayers)
+                        if (!map.SourceLayers.Contains(layer, StringComparer.OrdinalIgnoreCase)) map.SourceLayers.Add(layer);
+            }
+        }
+        static string RoleToken(string value) => new(value.Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant).ToArray());
+        static bool MatchesCompoundFunction(RevitLayerRow row, MaterialFunctionAssignment function)
+        {
+            string token = RoleToken(row.Subcategory);
+            return function switch
+            {
+                MaterialFunctionAssignment.Finish1 => token is "마감1" or "finish1",
+                MaterialFunctionAssignment.Finish2 => token is "마감2" or "finish2",
+                MaterialFunctionAssignment.Substrate => token is "하지재" or "substrate",
+                MaterialFunctionAssignment.Structure or MaterialFunctionAssignment.StructuralDeck =>
+                    token is "구조" or "structure" or "structuraldeck",
+                MaterialFunctionAssignment.Insulation => token is "열공기층" or "단열" or "thermalairlayer" or "insulation",
+                MaterialFunctionAssignment.Membrane => token is "멤브래인층" or "막층" or "membranelayer" or "membrane",
+                _ => false
+            };
+        }
+        static bool IsCompoundBoundaryFallback(RevitLayerRow row)
+        {
+            string token = RoleToken(row.Subcategory);
+            return token.Length == 0 || token is "일반모서리" or "genericedge" or "commonedge"
+                or "비코어레이어" or "noncorelayer";
+        }
+        void RestrictToCompoundLayer((Color Projection, Color Cut) marker, Element sourceElement,
+            MaterialFunctionAssignment? function)
+        {
+            if (sourceElement.Category == null) return;
+            var categoryRows = rows.Where(row => !row.IsCustom
+                && (row.CategoryId == sourceElement.Category.Id.Value
+                    || row.Category.Equals(sourceElement.Category.Name, StringComparison.OrdinalIgnoreCase))).ToList();
+            var sourceLayers = categoryRows.Where(row => IsCompoundBoundaryFallback(row)
+                    || (function.HasValue && MatchesCompoundFunction(row, function.Value)))
                 .SelectMany(row => new[] { row.Layer, row.CutLayer }).Where(name => !string.IsNullOrWhiteSpace(name))
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             foreach (Color color in new[] { marker.Projection, marker.Cut })
@@ -409,6 +451,7 @@ internal static class TemporaryFilterExport
                     if (element is ImportInstance || element.Category == null) continue;
                     MaterialLayerRule? materialRule = null; int priority = 100; Element sourceElement = element;
                     int compoundLayerIndex = -1; string compoundLayerFunction = "", diagnosticMaterialName = "";
+                    MaterialFunctionAssignment? compoundLayerFunctionValue = null;
                     Document sourceOwner = document;
                     bool suppressHostFills = false;
                     (Color Projection, Color Cut, string Match)? support = null;
@@ -449,7 +492,10 @@ internal static class TemporaryFilterExport
                             if (sourceOwner.GetElement(sourceElement.GetTypeId()) is HostObjAttributes diagnosticType
                                 && diagnosticType.GetCompoundStructure() is { } diagnosticStructure
                                 && layerIndex >= 0 && layerIndex < diagnosticStructure.LayerCount)
-                                compoundLayerFunction = diagnosticStructure.GetLayers()[layerIndex].Function.ToString();
+                            {
+                                compoundLayerFunctionValue = diagnosticStructure.GetLayers()[layerIndex].Function;
+                                compoundLayerFunction = compoundLayerFunctionValue.Value.ToString();
+                            }
                             priority = CompoundLayerBoundaryPriority(layerIndex);
                         }
                     }
@@ -464,7 +510,7 @@ internal static class TemporaryFilterExport
                     {
                         marker = Register($"material:{materialRule.RuleId}:{priority}:{sourceElement.Category?.Id.Value}", materialRule.Layer, materialRule.Color,
                             materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
-                        RestrictToSourceCategory(marker, sourceElement);
+                        RestrictToCompoundLayer(marker, sourceElement, compoundLayerFunctionValue);
                         RecordMarkerProvenance(marker, sourceOwner, sourceElement,
                             materialRule.MaterialName.Length > 0 ? materialRule.MaterialName : diagnosticMaterialName,
                             compoundLayerIndex, compoundLayerFunction);
@@ -480,7 +526,27 @@ internal static class TemporaryFilterExport
                             result.MatchedElements[typeRule.RuleId]++;
                             continue;
                         }
-                        marker = markers["type:" + typeRule.RuleId]; matchedRule = typeRule.RuleId;
+                        if (element is Part && compoundLayerIndex >= 0)
+                        {
+                            marker = Register($"type-part:{typeRule.RuleId}:{priority}:{sourceElement.Category?.Id.Value}",
+                                typeRule.Layer, typeRule.Color, typeRule.CutLayer, typeRule.CutColor,
+                                typeRule.RuleId, false, priority);
+                            RestrictToCompoundLayer(marker, sourceElement, compoundLayerFunctionValue);
+                            RecordMarkerProvenance(marker, sourceOwner, sourceElement, diagnosticMaterialName,
+                                compoundLayerIndex, compoundLayerFunction);
+                        }
+                        else marker = markers["type:" + typeRule.RuleId];
+                        matchedRule = typeRule.RuleId;
+                    }
+                    else if (element is Part && compoundLayerIndex >= 0)
+                    {
+                        const string ownerRule = "__compound_owner__";
+                        marker = Register($"owner:{sourceElement.Category?.Id.Value}:{priority}:{compoundLayerFunction}",
+                            "", 7, "", 7, ownerRule, false, priority, preserveNative: true);
+                        RestrictToCompoundLayer(marker, sourceElement, compoundLayerFunctionValue);
+                        RecordMarkerProvenance(marker, sourceOwner, sourceElement, diagnosticMaterialName,
+                            compoundLayerIndex, compoundLayerFunction);
+                        matchedRule = ownerRule; countMatch = false;
                     }
                     else continue;
                     using var settings = view.GetElementOverrides(element.Id);

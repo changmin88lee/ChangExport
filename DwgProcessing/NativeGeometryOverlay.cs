@@ -46,7 +46,7 @@ public sealed partial class ManagedDwgProcessor
             string temporary = NativeOverlayLayerPrefix + "C" + map.MarkerAci.ToString(CultureInfo.InvariantCulture);
             targets[temporary] = new OverlayTarget(map.Layer, map.Color, map.RuleId,
                 map.BoundaryPriority, map.RuleId.StartsWith("wrap:", StringComparison.Ordinal), map.RemapFills,
-                new(map.SourceLayers), map.MarkerAci);
+                new(map.SourceLayers), map.MarkerAci, map.PreserveNative);
             return new ColorLayerRemap
             {
                 MarkerAci = map.MarkerAci,
@@ -55,14 +55,15 @@ public sealed partial class ManagedDwgProcessor
                 RuleId = map.RuleId,
                 RemapFills = map.RemapFills,
                 BoundaryPriority = map.BoundaryPriority,
-                SourceLayers = new(map.SourceLayers)
+                SourceLayers = new(map.SourceLayers),
+                PreserveNative = map.PreserveNative
             };
         }).ToList();
         classifierRequest.MaterialAppearanceRemaps = request.MaterialAppearanceRemaps.Select((map, index) =>
         {
             string temporary = NativeOverlayLayerPrefix + "A" + index.ToString(CultureInfo.InvariantCulture);
             targets[temporary] = new OverlayTarget(map.Layer, map.Color, map.RuleId,
-                map.BoundaryPriority, false, true, new(), -(index + 1));
+                map.BoundaryPriority, false, true, new(), -(index + 1), false);
             return new MaterialAppearanceRemap
             {
                 Pattern = map.Pattern,
@@ -130,6 +131,7 @@ public sealed partial class ManagedDwgProcessor
             BoundaryPriority = map.BoundaryPriority,
             RemapFills = map.RemapFills,
             Wrapping = map.RuleId.StartsWith("wrap:", StringComparison.Ordinal),
+            PreserveNative = map.PreserveNative,
             ExpectedRevitMatches = request.ExpectedRuleMatches.GetValueOrDefault(map.RuleId),
             SourceLayers = new(map.SourceLayers),
             SourceCategories = new(map.DiagnosticSourceCategories),
@@ -183,11 +185,12 @@ public sealed partial class ManagedDwgProcessor
         {
             check();
             if (!targets.TryGetValue(entity.Layer.Name, out OverlayTarget? target)) return;
+            IReadOnlyList<OverlayWorldLine> worldSegments = WorldLines(entity, transform);
             if (Diagnostic(target) is { } diagnostic)
             {
                 diagnostic.ClassifiedEntities++;
                 Increment(diagnostic.MarkerEntityTypes, entity.ObjectName);
-                if (entity is Line) diagnostic.ClassifiedLines++;
+                diagnostic.ClassifiedLines += worldSegments.Count;
             }
             string? signature = NativeSignature(entity, transform);
             if (signature == null)
@@ -202,7 +205,7 @@ public sealed partial class ManagedDwgProcessor
             if (!marks.TryGetValue(signature, out List<OverlayTarget>? values))
                 marks[signature] = values = new();
             values.Add(target);
-            if (WorldLine(entity, transform) is { } segment)
+            foreach (OverlayWorldLine segment in worldSegments)
             {
                 if (!lineMarks.TryGetValue(segment.Key, out List<OverlayLine>? lines))
                     lineMarks[segment.Key] = lines = new();
@@ -230,6 +233,28 @@ public sealed partial class ManagedDwgProcessor
         var assignments = new Dictionary<Entity, List<OverlayTarget>>();
         var lineOccurrences = new Dictionary<Line, List<List<OverlayPiece>>>(ReferenceEqualityComparer.Instance);
         var lineOwners = new Dictionary<Line, BlockRecord>(ReferenceEqualityComparer.Instance);
+        var polylineOccurrences = new Dictionary<LwPolyline, List<List<List<OverlayPiece>>>>(ReferenceEqualityComparer.Instance);
+        IReadOnlyList<OverlayLine> CandidateLines(Entity entity, OverlayWorldLine nativeLine)
+        {
+            IReadOnlyList<OverlayLine> candidates = lineMarks.TryGetValue(nativeLine.Key, out List<OverlayLine>? lineValues)
+                ? lineValues : Array.Empty<OverlayLine>();
+            foreach (OverlayLine candidate in candidates.Where(candidate => candidate.End > nativeLine.Start + 1e-5
+                && candidate.Start < nativeLine.End - 1e-5))
+            {
+                if (Diagnostic(candidate.Target) is not { } diagnostic) continue;
+                diagnostic.CollinearNativeCandidates++;
+                Increment(diagnostic.CandidateNativeLayers, entity.Layer.Name);
+                if (AcceptsSourceLayer(candidate.Target, entity.Layer.Name)) diagnostic.AcceptedSourceCandidates++;
+                else
+                {
+                    diagnostic.RejectedSourceCandidates++;
+                    Increment(diagnostic.RejectedNativeLayers, entity.Layer.Name);
+                    Reject(candidate.Target, "Native 원본 레이어 제한", nativeLine.Key, entity.Layer.Name,
+                        entity.ObjectName, "형상은 겹치지만 SourceLayers에 없는 원본 레이어입니다.");
+                }
+            }
+            return candidates;
+        }
         WalkWorld(native.ModelSpace, (entity, transform, owner) =>
         {
             check();
@@ -246,21 +271,30 @@ public sealed partial class ManagedDwgProcessor
             }
             if (entity is Line nativeEntity && WorldLine(entity, transform) is { } nativeLine)
             {
-                IReadOnlyList<OverlayLine> candidates = lineMarks.TryGetValue(nativeLine.Key, out List<OverlayLine>? lineValues)
-                    ? lineValues : Array.Empty<OverlayLine>();
-                foreach (OverlayLine candidate in candidates.Where(candidate => candidate.End > nativeLine.Start + 1e-5
-                    && candidate.Start < nativeLine.End - 1e-5))
+                IReadOnlyList<OverlayLine> candidates = CandidateLines(entity, nativeLine);
+                if (candidates.Count == 0 && marks.TryGetValue(signature, out List<OverlayTarget>? exactLines))
                 {
-                    if (Diagnostic(candidate.Target) is not { } diagnostic) continue;
-                    diagnostic.CollinearNativeCandidates++;
-                    Increment(diagnostic.CandidateNativeLayers, entity.Layer.Name);
-                    if (AcceptsSourceLayer(candidate.Target, entity.Layer.Name)) diagnostic.AcceptedSourceCandidates++;
-                    else
+                    var exactCandidates = exactLines.Where(candidate => AcceptsSourceLayer(candidate, entity.Layer.Name)).ToList();
+                    foreach (OverlayTarget candidate in exactLines)
                     {
-                        diagnostic.RejectedSourceCandidates++;
-                        Increment(diagnostic.RejectedNativeLayers, entity.Layer.Name);
-                        Reject(candidate.Target, "Native 원본 레이어 제한", nativeLine.Key, entity.Layer.Name,
-                            entity.ObjectName, "형상은 겹치지만 SourceLayers에 없는 원본 레이어입니다.");
+                        if (Diagnostic(candidate) is not { } diagnostic) continue;
+                        Increment(diagnostic.CandidateNativeLayers, entity.Layer.Name);
+                        if (AcceptsSourceLayer(candidate, entity.Layer.Name)) diagnostic.AcceptedSourceCandidates++;
+                        else
+                        {
+                            diagnostic.RejectedSourceCandidates++;
+                            Increment(diagnostic.RejectedNativeLayers, entity.Layer.Name);
+                            Reject(candidate, "Native 원본 레이어 제한", signature, entity.Layer.Name,
+                                entity.ObjectName, "직선 끝점은 정확히 같지만 SourceLayers에 없는 원본 레이어입니다.");
+                        }
+                    }
+                    if (exactCandidates.Count > 0)
+                    {
+                        candidates = exactCandidates.Select(candidate =>
+                            new OverlayLine(nativeLine.Start, nativeLine.End, candidate)).ToList();
+                        foreach (OverlayTarget candidate in exactCandidates)
+                            Sample(candidate, "직선 정확 서명 대체", signature, entity.Layer.Name, entity.ObjectName,
+                                "공선 키 대신 동일한 양 끝점 서명으로 전체 직선을 판정합니다.");
                     }
                 }
                 if (!lineOccurrences.TryGetValue(nativeEntity, out List<List<OverlayPiece>>? occurrences))
@@ -268,6 +302,20 @@ public sealed partial class ManagedDwgProcessor
                 occurrences.Add(CoveredLinePieces(nativeLine, candidates, entity.Layer.Name));
                 lineOwners.TryAdd(nativeEntity, owner);
                 return;
+            }
+            if (entity is LwPolyline nativePolyline)
+            {
+                IReadOnlyList<OverlayWorldLine> segments = WorldLines(entity, transform);
+                if (segments.Count > 0)
+                {
+                    var occurrence = new List<List<OverlayPiece>>();
+                    foreach (OverlayWorldLine segment in segments)
+                        occurrence.Add(CoveredLinePieces(segment, CandidateLines(entity, segment), entity.Layer.Name));
+                    if (!polylineOccurrences.TryGetValue(nativePolyline, out List<List<List<OverlayPiece>>>? occurrences))
+                        polylineOccurrences[nativePolyline] = occurrences = new();
+                    occurrences.Add(occurrence);
+                    return;
+                }
             }
             OverlayTarget? target;
             if (!marks.TryGetValue(signature, out List<OverlayTarget>? exact)) return;
@@ -299,7 +347,8 @@ public sealed partial class ManagedDwgProcessor
             HashSet<string> lineSignatures = markerLineSignatures[pair.Key];
             diagnostic.UniqueMarkerLineSignatures = lineSignatures.Count;
             diagnostic.ExactNativeLineSignatures = lineSignatures.Count(nativeSignatures.Contains);
-            if (diagnostic.ExactNativeLineSignatures > 0 && diagnostic.CollinearNativeCandidates == 0)
+            if (diagnostic.ExactNativeLineSignatures > 0 && diagnostic.CollinearNativeCandidates == 0
+                && diagnostic.AcceptedSourceCandidates == 0)
                 diagnostic.RejectionReasons["직선 정확 형상은 있으나 공선 키 후보 없음"] = diagnostic.ExactNativeLineSignatures;
             if (diagnostic.MissingNativeSignatures == 0) continue;
             diagnostic.RejectionReasons["Native 정확 형상 없음"] = diagnostic.MissingNativeSignatures;
@@ -364,9 +413,24 @@ public sealed partial class ManagedDwgProcessor
                 continue;
             }
             List<OverlayPiece> pieces = occurrences[0];
-            if (!pieces.Any(piece => piece.Target != null)) continue;
+            if (!pieces.Any(piece => piece.Target is { PreserveNative: false }))
+            {
+                foreach (OverlayTarget owner in pieces.Where(piece => piece.Target?.PreserveNative == true)
+                    .Select(piece => piece.Target!).Distinct())
+                {
+                    if (Diagnostic(owner) is { } diagnostic) diagnostic.PreservedEntities++;
+                    Sample(owner, "Native 소유권 유지", PieceKey(pieces), pair.Key.Layer.Name, pair.Key.ObjectName);
+                }
+                continue;
+            }
             if (pieces.Count == 1 && pieces[0].Target is { } whole)
             {
+                if (whole.PreserveNative)
+                {
+                    if (Diagnostic(whole) is { } preserved) preserved.PreservedEntities++;
+                    Sample(whole, "Native 소유권 유지", PieceKey(pieces), pair.Key.Layer.Name, pair.Key.ObjectName);
+                    continue;
+                }
                 assignments[pair.Key] = new() { whole };
                 if (Diagnostic(whole) is { } diagnostic) diagnostic.FullLineAssignments++;
                 Sample(whole, "전체 직선 판정", NativeSignature(pair.Key, Transform.CreateTranslation(XYZ.Zero)) ?? "L",
@@ -391,14 +455,70 @@ public sealed partial class ManagedDwgProcessor
                 replacements.Add(clone);
                 if (piece.Target != null)
                 {
-                    assignments[clone] = new() { piece.Target };
-                    if (Diagnostic(piece.Target) is { } diagnostic) diagnostic.PartialLineAssignments++;
-                    Sample(piece.Target, "부분 직선 판정", PieceKey(new[] { piece }), pair.Key.Layer.Name,
-                        pair.Key.ObjectName, $"원본 직선 구간 {piece.Start:R}~{piece.End:R}");
+                    if (piece.Target.PreserveNative)
+                    {
+                        if (Diagnostic(piece.Target) is { } preserved) preserved.PreservedEntities++;
+                        Sample(piece.Target, "Native 부분 소유권 유지", PieceKey(new[] { piece }), pair.Key.Layer.Name,
+                            pair.Key.ObjectName, $"원본 직선 구간 {piece.Start:R}~{piece.End:R}");
+                    }
+                    else
+                    {
+                        assignments[clone] = new() { piece.Target };
+                        if (Diagnostic(piece.Target) is { } diagnostic) diagnostic.PartialLineAssignments++;
+                        Sample(piece.Target, "부분 직선 판정", PieceKey(new[] { piece }), pair.Key.Layer.Name,
+                            pair.Key.ObjectName, $"원본 직선 구간 {piece.Start:R}~{piece.End:R}");
+                    }
                 }
             }
             lineReplacements[pair.Key] = replacements;
             partialLinesSplit++;
+        }
+        foreach (var pair in polylineOccurrences)
+        {
+            List<List<List<OverlayPiece>>> occurrences = pair.Value;
+            var variants = occurrences.Select(segments => string.Join("||", segments.Select(PieceKey)))
+                .Distinct(StringComparer.Ordinal).ToList();
+            if (variants.Count != 1)
+            {
+                sharedAmbiguous += occurrences.Count;
+                foreach (OverlayTarget target in occurrences.SelectMany(segments => segments).SelectMany(pieces => pieces)
+                    .Where(piece => piece.Target != null).Select(piece => piece.Target!).Distinct())
+                    Reject(target, "공유 L자 폴리라인 배치별 판정 불일치", variants[0], pair.Key.Layer.Name,
+                        pair.Key.ObjectName, $"동일 블록 정의의 배치별 세그먼트 판정이 {variants.Count:N0}가지입니다.");
+                continue;
+            }
+            List<List<OverlayPiece>> segments = occurrences[0];
+            bool fullyOwned = segments.Count > 0 && segments.All(pieces => pieces.Count == 1
+                && pieces[0].Start <= 1e-9 && pieces[0].End >= 1 - 1e-9 && pieces[0].Target != null);
+            if (!fullyOwned)
+            {
+                foreach (OverlayTarget target in segments.SelectMany(pieces => pieces)
+                    .Where(piece => piece.Target != null).Select(piece => piece.Target!).Distinct())
+                    Reject(target, "L자 폴리라인 일부 세그먼트만 판정", string.Join("||", segments.Select(PieceKey)),
+                        pair.Key.Layer.Name, pair.Key.ObjectName, "Native 폴리라인 전체의 소유 대상이 같을 때만 레이어를 전사합니다.");
+                continue;
+            }
+            var owners = segments.Select(pieces => pieces[0].Target!).ToList();
+            OverlayTarget? selected = ResolveTarget(owners);
+            if (selected == null || owners.Any(owner => TargetKey(owner) != TargetKey(selected)))
+            {
+                sharedAmbiguous += occurrences.Count;
+                foreach (OverlayTarget target in owners.Distinct())
+                    Reject(target, "L자 폴리라인 세그먼트 대상 충돌", string.Join("||", segments.Select(PieceKey)),
+                        pair.Key.Layer.Name, pair.Key.ObjectName);
+                continue;
+            }
+            if (selected.PreserveNative)
+            {
+                if (Diagnostic(selected) is { } preserved) preserved.PreservedEntities++;
+                Sample(selected, "Native L자 폴리라인 소유권 유지", string.Join("||", segments.Select(PieceKey)),
+                    pair.Key.Layer.Name, pair.Key.ObjectName);
+                continue;
+            }
+            assignments[pair.Key] = new() { selected };
+            if (Diagnostic(selected) is { } diagnostic) diagnostic.FullLineAssignments += segments.Count;
+            Sample(selected, "전체 L자 폴리라인 판정", string.Join("||", segments.Select(PieceKey)),
+                pair.Key.Layer.Name, pair.Key.ObjectName, $"직선 세그먼트 {segments.Count:N0}개");
         }
         foreach (var ownerGroup in lineReplacements.GroupBy(pair => lineOwners[pair.Key]))
         {
@@ -419,7 +539,7 @@ public sealed partial class ManagedDwgProcessor
             PreserveMaskDrawOrder(owner, rebuilt);
         }
 
-        var counts = request.ColorRemaps.Select(map => map.RuleId)
+        var counts = request.ColorRemaps.Where(map => !map.PreserveNative).Select(map => map.RuleId)
             .Concat(request.MaterialAppearanceRemaps.Select(map => map.RuleId))
             .Distinct(StringComparer.Ordinal).ToDictionary(rule => rule, _ => 0, StringComparer.Ordinal);
         int applied = 0;
@@ -436,6 +556,12 @@ public sealed partial class ManagedDwgProcessor
             }
             OverlayTarget target = selected;
             string nativeLayer = pair.Key.Layer.Name;
+            if (target.PreserveNative)
+            {
+                if (Diagnostic(target) is { } preserved) preserved.PreservedEntities++;
+                Sample(target, "Native 소유권 유지", pair.Key.ObjectName, nativeLayer, pair.Key.ObjectName);
+                continue;
+            }
             if (!native.Layers.TryGetValue(target.Layer, out Layer? layer))
             {
                 layer = (Layer)pair.Key.Layer.Clone();
@@ -456,7 +582,8 @@ public sealed partial class ManagedDwgProcessor
             applied++;
         }
 
-        int unmatched = marks.Where(pair => !nativeSignatures.Contains(pair.Key)).Sum(pair => pair.Value.Count);
+        int unmatched = marks.Where(pair => !nativeSignatures.Contains(pair.Key))
+            .Sum(pair => pair.Value.Count(target => !target.PreserveNative));
         response.NativeOverlayMatchedEntities = applied;
         response.NativeOverlayUnmatchedMarkers = unmatched;
         response.NativeOverlayAmbiguousMarkers = ambiguous + sharedAmbiguous;
@@ -467,23 +594,24 @@ public sealed partial class ManagedDwgProcessor
         foreach (NativeOverlayRuleDiagnostic diagnostic in response.NativeOverlayRuleDiagnostics
             .Where(diagnostic => diagnostic.ClassifiedEntities > 0 || diagnostic.ExpectedRevitMatches > 0))
         {
-            if (diagnostic.AcceptedSourceCandidates > 0
+            if (!diagnostic.PreserveNative && diagnostic.AcceptedSourceCandidates > 0
                 && diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments == 0
                 && diagnostic.AppliedEntities == 0)
                 diagnostic.RejectionReasons["허용 후보 후 구간 소유자 미결정"] = diagnostic.AcceptedSourceCandidates;
-            if (diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments > 0
+            if (!diagnostic.PreserveNative && diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments > 0
                 && diagnostic.AppliedEntities == 0)
                 diagnostic.RejectionReasons["구간 판정 후 최종 대상 미적용"] =
                     diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments;
             string origins = diagnostic.AppliedNativeLayers.Count == 0 ? "없음" : string.Join(", ",
                 diagnostic.AppliedNativeLayers.OrderByDescending(pair => pair.Value).ThenBy(pair => pair.Key)
                     .Select(pair => $"{pair.Key} {pair.Value:N0}"));
-            response.Warnings.Add($"Native 판정 상세 · ACI {diagnostic.MarkerAci} · 규칙 {diagnostic.RuleId} · 대상 '{diagnostic.TargetLayer}'"
+            string kind = diagnostic.PreserveNative ? "Native 소유권 상세" : "Native 판정 상세";
+            response.Warnings.Add($"{kind} · ACI {diagnostic.MarkerAci} · 규칙 {diagnostic.RuleId} · 대상 '{diagnostic.TargetLayer}'"
                 + $" · 분류 {diagnostic.ClassifiedEntities:N0}(직선 {diagnostic.ClassifiedLines:N0})"
                 + $" · 고유서명 {diagnostic.UniqueMarkerSignatures:N0} / 정확 {diagnostic.ExactNativeSignatures:N0} / 없음 {diagnostic.MissingNativeSignatures:N0}"
                 + $" · 직선서명 {diagnostic.UniqueMarkerLineSignatures:N0} / 정확 {diagnostic.ExactNativeLineSignatures:N0}"
                 + $" · 공선후보 {diagnostic.CollinearNativeCandidates:N0} / 허용 {diagnostic.AcceptedSourceCandidates:N0} / 원본레이어 거절 {diagnostic.RejectedSourceCandidates:N0}"
-                + $" · 전체선 {diagnostic.FullLineAssignments:N0} / 부분선 {diagnostic.PartialLineAssignments:N0} / 최종 {diagnostic.AppliedEntities:N0}"
+                + $" · 전체선 {diagnostic.FullLineAssignments:N0} / 부분선 {diagnostic.PartialLineAssignments:N0} / 최종 {diagnostic.AppliedEntities:N0} / Native 유지 {diagnostic.PreservedEntities:N0}"
                 + $" · 최종 원본레이어 [{origins}]");
         }
         if (unmatched > 0)
@@ -509,10 +637,20 @@ public sealed partial class ManagedDwgProcessor
 
     private static OverlayTarget? ResolveTarget(IEnumerable<OverlayTarget> source)
     {
-        var candidates = source.GroupBy(TargetKey, StringComparer.Ordinal).Select(group => group.First()).ToList();
+        // Several Parts can resolve to the same output rule. Keep that output's
+        // greatest real compound-layer rank instead of whichever marker happened
+        // to be enumerated first.
+        var candidates = source.GroupBy(TargetKey, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(TargetRank).ThenBy(candidate => candidate.MarkerAci).First()).ToList();
         if (candidates.Count == 0) return null;
         int bestRank = candidates.Max(TargetRank);
         var best = candidates.Where(candidate => TargetRank(candidate) == bestRank).ToList();
+        // A same-rank unfiltered owner means the geometry cannot be attributed to
+        // one filtered source object safely. Preserve the Native entity rather
+        // than transferring another object's coincident marker.
+        OverlayTarget? preserve = best.Where(candidate => candidate.PreserveNative)
+            .OrderBy(candidate => candidate.MarkerAci).FirstOrDefault();
+        if (preserve != null) return preserve;
         return best.Select(TargetKey).Distinct(StringComparer.Ordinal).Count() == 1 ? best[0] : null;
     }
 
@@ -551,7 +689,7 @@ public sealed partial class ManagedDwgProcessor
             || pieces.Where(piece => piece.Target != null).Select(piece => TargetKey(piece.Target!))
                 .Distinct(StringComparer.Ordinal).Skip(1).Any();
         if (divided)
-            pieces = pieces.Select(piece => piece.Target is { RemapFills: false, Wrapping: false }
+            pieces = pieces.Select(piece => piece.Target is { RemapFills: false, Wrapping: false, PreserveNative: false }
                 ? piece with { Target = null } : piece).ToList();
         var merged = new List<OverlayPiece>();
         foreach (OverlayPiece piece in pieces.OrderBy(piece => piece.Start))
@@ -573,6 +711,33 @@ public sealed partial class ManagedDwgProcessor
         + Math.Round(piece.End, 8).ToString("R", CultureInfo.InvariantCulture) + ":"
         + (piece.Target == null ? "-" : TargetKey(piece.Target))));
 
+    private static IReadOnlyList<OverlayWorldLine> WorldLines(Entity source, Transform transform)
+    {
+        if (source is Line)
+            return WorldLine(source, transform) is { } line ? new[] { line } : Array.Empty<OverlayWorldLine>();
+        if (source is not LwPolyline) return Array.Empty<OverlayWorldLine>();
+        Entity clone = (Entity)source.Clone();
+        try { TransformGeometry(clone, transform); }
+        catch { return Array.Empty<OverlayWorldLine>(); }
+        if (clone is not LwPolyline polyline || polyline.Vertices.Count < 2) return Array.Empty<OverlayWorldLine>();
+        var vertices = polyline.Vertices.ToList();
+        int count = polyline.IsClosed ? vertices.Count : vertices.Count - 1;
+        var result = new List<OverlayWorldLine>();
+        Transform identity = Transform.CreateTranslation(XYZ.Zero);
+        for (int index = 0; index < count; index++)
+        {
+            LwPolyline.Vertex start = vertices[index], end = vertices[(index + 1) % vertices.Count];
+            if (Math.Abs(start.Bulge) > Epsilon) continue;
+            var segment = new Line
+            {
+                StartPoint = new XYZ(start.Location.X, start.Location.Y, polyline.Elevation),
+                EndPoint = new XYZ(end.Location.X, end.Location.Y, polyline.Elevation)
+            };
+            if (WorldLine(segment, identity) is { } world) result.Add(world);
+        }
+        return result;
+    }
+
     private static OverlayWorldLine? WorldLine(Entity source, Transform transform)
     {
         if (source is not Line) return null;
@@ -580,16 +745,23 @@ public sealed partial class ManagedDwgProcessor
         try { TransformGeometry(clone, transform); }
         catch { return null; }
         if (clone is not Line line) return null;
-        double dx = line.EndPoint.X - line.StartPoint.X, dy = line.EndPoint.Y - line.StartPoint.Y;
+        static double R(double value)
+        {
+            double rounded = Math.Round(value, 6);
+            return rounded == 0 ? 0 : rounded;
+        }
+        XYZ startPoint = new(R(line.StartPoint.X), R(line.StartPoint.Y), R(line.StartPoint.Z));
+        XYZ endPoint = new(R(line.EndPoint.X), R(line.EndPoint.Y), R(line.EndPoint.Z));
+        double dx = endPoint.X - startPoint.X, dy = endPoint.Y - startPoint.Y;
         double length = Math.Sqrt(dx * dx + dy * dy);
-        if (length < Epsilon || Math.Abs(line.EndPoint.Z - line.StartPoint.Z) > 1e-5) return null;
+        if (length < Epsilon || Math.Abs(endPoint.Z - startPoint.Z) > 1e-5) return null;
         double x = dx / length, y = dy / length;
         if (x < -Epsilon || (Math.Abs(x) < Epsilon && y < 0)) { x = -x; y = -y; }
-        double offset = -y * line.StartPoint.X + x * line.StartPoint.Y;
-        double first = x * line.StartPoint.X + y * line.StartPoint.Y;
-        double second = x * line.EndPoint.X + y * line.EndPoint.Y;
+        double offset = -y * startPoint.X + x * startPoint.Y;
+        double first = x * startPoint.X + y * startPoint.Y;
+        double second = x * endPoint.X + y * endPoint.Y;
         static string N(double value) => Math.Round(value, 5).ToString("R", CultureInfo.InvariantCulture);
-        return new OverlayWorldLine(N(x) + "|" + N(y) + "|" + N(offset) + "|" + N(line.StartPoint.Z),
+        return new OverlayWorldLine(N(x) + "|" + N(y) + "|" + N(offset) + "|" + N(startPoint.Z),
             Math.Min(first, second), Math.Max(first, second), first <= second);
     }
 
@@ -691,7 +863,7 @@ public sealed partial class ManagedDwgProcessor
     }
 
     private sealed record OverlayTarget(string Layer, int Color, string RuleId,
-        int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers, int MarkerAci);
+        int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers, int MarkerAci, bool PreserveNative);
     private sealed record OverlayLine(double Start, double End, OverlayTarget Target);
     private sealed record OverlayWorldLine(string Key, double Start, double End, bool Forward);
     private sealed record OverlayPiece(double Start, double End, OverlayTarget? Target);

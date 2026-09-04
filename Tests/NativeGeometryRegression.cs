@@ -116,6 +116,84 @@ internal static class NativeGeometryRegression
             && entities.OfType<Hatch>().Count(hatch => hatch.Layer.Name == "NATIVE-KEEP") == 1,
             "Hatches with the same envelope but different full boundaries are never confused");
 
+        CadDocument ownershipNative = DwgRegression.Sheet(), ownershipFiltered = DwgRegression.Sheet();
+        Layer finish = new("NATIVE-FINISH"), substrate = new("NATIVE-SUBSTRATE"), generic = new("NATIVE-GENERIC");
+        ownershipNative.Layers.Add(finish); ownershipNative.Layers.Add(substrate); ownershipNative.Layers.Add(generic);
+        void NativeLine(XYZ start, XYZ end, Layer layer) => ownershipNative.Entities.Add(new Line
+            { StartPoint = start, EndPoint = end, Layer = layer });
+        NativeLine(new XYZ(0, 0, 0), new XYZ(100, 0, 0), substrate);
+        NativeLine(new XYZ(0, 10, 0), new XYZ(100, 10, 0), generic);
+        NativeLine(new XYZ(0, 20, 0), new XYZ(100, 20, 0), generic);
+        NativeLine(new XYZ(0, 30, 0), new XYZ(100, 30, 0), generic);
+        NativeLine(new XYZ(0, 40, 0), new XYZ(100, 40, 0), generic);
+        NativeLine(new XYZ(100, 40, 0), new XYZ(100, 80, 0), generic);
+        ownershipNative.Entities.Add(new LwPolyline(new[]
+        {
+            new LwPolyline.Vertex(new XY(0, 90)), new LwPolyline.Vertex(new XY(100, 90)),
+            new LwPolyline.Vertex(new XY(100, 120))
+        }) { Layer = generic });
+        NativeLine(new XYZ(78756.3320401, 100, 0), new XYZ(78756.3320402, 110, 0), generic);
+        var ownershipMarker = new Layer("REVIT-FILTER"); ownershipFiltered.Layers.Add(ownershipMarker);
+        void MarkerLine(XYZ start, XYZ end, short aci) => ownershipFiltered.Entities.Add(new Line
+            { StartPoint = start, EndPoint = end, Layer = ownershipMarker, Color = new ACadSharp.Color(aci) });
+        MarkerLine(new XYZ(0, 0, 0), new XYZ(100, 0, 0), 216);
+        MarkerLine(new XYZ(0, 10, 0), new XYZ(100, 10, 0), 210);
+        MarkerLine(new XYZ(0, 10, 0), new XYZ(100, 10, 0), 211);
+        MarkerLine(new XYZ(0, 20, 0), new XYZ(100, 20, 0), 212);
+        MarkerLine(new XYZ(0, 20, 0), new XYZ(100, 20, 0), 211);
+        MarkerLine(new XYZ(0, 30, 0), new XYZ(100, 30, 0), 210);
+        MarkerLine(new XYZ(0, 30, 0), new XYZ(100, 30, 0), 212);
+        MarkerLine(new XYZ(0, 30, 0), new XYZ(100, 30, 0), 213);
+        ownershipFiltered.Entities.Add(new LwPolyline(new[]
+        {
+            new LwPolyline.Vertex(new XY(0, 40)), new LwPolyline.Vertex(new XY(100, 40)),
+            new LwPolyline.Vertex(new XY(100, 80))
+        }) { Layer = ownershipMarker, Color = new ACadSharp.Color(214) });
+        MarkerLine(new XYZ(0, 90, 0), new XYZ(100, 90, 0), 217);
+        MarkerLine(new XYZ(100, 90, 0), new XYZ(100, 120, 0), 217);
+        MarkerLine(new XYZ(78756.3320404, 100, 0), new XYZ(78756.3320398, 110, 0), 215);
+        string ownershipNativePath = Path.Combine(output, "nge-ownership-native.dwg");
+        string ownershipFilteredPath = Path.Combine(output, "nge-ownership-filtered.dwg");
+        string ownershipResultPath = Path.Combine(output, "nge-ownership-result.dwg");
+        DwgWriter.Write(ownershipNativePath, ownershipNative); DwgWriter.Write(ownershipFilteredPath, ownershipFiltered);
+        BridgeResponse ownershipResponse = new ManagedDwgProcessor().Run(new BridgeRequest
+        {
+            Operation = "Flatten", OutputPath = ownershipResultPath, FilterReferencePath = ownershipFilteredPath,
+            ColorRemaps = new()
+            {
+                new() { MarkerAci = 210, Layer = "CEMENT", Color = 4, RuleId = "material", RemapFills = true,
+                    BoundaryPriority = 1, SourceLayers = new() { "NATIVE-GENERIC" } },
+                new() { MarkerAci = 211, Layer = "", Color = 7, RuleId = "__compound_owner__",
+                    BoundaryPriority = 2, SourceLayers = new() { "NATIVE-GENERIC" }, PreserveNative = true },
+                new() { MarkerAci = 212, Layer = "CEMENT", Color = 4, RuleId = "material", RemapFills = true,
+                    BoundaryPriority = 3, SourceLayers = new() { "NATIVE-GENERIC" } },
+                new() { MarkerAci = 213, Layer = "TYPE", Color = 3, RuleId = "type", BoundaryPriority = 2,
+                    SourceLayers = new() { "NATIVE-GENERIC" } },
+                new() { MarkerAci = 214, Layer = "POLY-TYPE", Color = 2, RuleId = "poly" },
+                new() { MarkerAci = 215, Layer = "SHORT-TYPE", Color = 1, RuleId = "short" },
+                new() { MarkerAci = 216, Layer = "CEMENT", Color = 4, RuleId = "material", RemapFills = true,
+                    BoundaryPriority = 1, SourceLayers = new() { "NATIVE-FINISH" } },
+                new() { MarkerAci = 217, Layer = "LINE-POLY", Color = 6, RuleId = "line-poly" }
+            }
+        }, ownershipNativePath, output);
+        Entity[] ownershipEntities = DwgRegression.Walk(DwgReader.Read(ownershipResultPath).ModelSpace).ToArray();
+        check(ownershipEntities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-SUBSTRATE"
+                && Math.Abs(line.StartPoint.Y) < 1e-8)
+            && ownershipEntities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-GENERIC"
+                && Math.Abs(line.StartPoint.Y - 10) < 1e-8),
+            "Compound function gates and a higher unfiltered owner preserve the original Native boundary");
+        check(ownershipEntities.OfType<Line>().Count(line => line.Layer.Name == "CEMENT") == 2,
+            "The actual inner compound index wins and same-target markers retain their greatest priority");
+        check(ownershipEntities.OfType<Line>().Count(line => line.Layer.Name == "POLY-TYPE") == 2,
+            "Straight segments extracted from an L-shaped marker polyline classify Native lines");
+        check(ownershipEntities.OfType<LwPolyline>().Count(polyline => polyline.Layer.Name == "LINE-POLY") == 1,
+            "Split marker lines classify a fully owned Native L-shaped polyline");
+        check(ownershipEntities.OfType<Line>().Count(line => line.Layer.Name == "SHORT-TYPE") == 1,
+            "Endpoint-canonical line keys match short lines at large coordinates");
+        check(ownershipResponse.NativeOverlayRuleDiagnostics.Single(diagnostic => diagnostic.MarkerAci == 211).PreservedEntities > 0
+            && !ownershipResponse.CustomRuleEntityCounts.ContainsKey("__compound_owner__"),
+            "Ownership-only markers report Native preservation without becoming an output rule");
+
         CadDocument duplicateNative = DwgRegression.Sheet(), duplicateFiltered = DwgRegression.Sheet();
         var duplicateLayer = new Layer("NATIVE-KEEP"); duplicateNative.Layers.Add(duplicateLayer);
         var duplicateMarker = new Layer("REVIT-FILTER"); duplicateFiltered.Layers.Add(duplicateMarker);
