@@ -284,6 +284,8 @@ public sealed partial class ManagedDwgProcessor
         int blockIndex = 0;
         var mappings = request.ColorRemaps.ToDictionary(m => m.MarkerAci);
         var counts = mappings.Keys.ToDictionary(k => k, _ => 0);
+        bool nativeClassifier = request.ColorRemaps.Count > 0
+            && request.ColorRemaps.All(map => map.Layer.StartsWith(NativeOverlayLayerPrefix, StringComparison.Ordinal));
         var materialBoundaries = new Dictionary<Entity, (int Priority, bool Wrapping, string SourceScope)>();
         var appearanceCounts = request.MaterialAppearanceRemaps.ToDictionary(map => map, _ => 0);
         var byRgb = request.ColorRemaps.ToDictionary(m => ColorRgb(new ACadSharp.Color((short)m.MarkerAci)));
@@ -534,6 +536,10 @@ public sealed partial class ManagedDwgProcessor
         }
         void RemoveDuplicateMaterialBoundaries(BlockRecord block)
         {
+            // The detached NGE drawing is a classification overlay, not a final
+            // geometry result. Keep every coincident owner marker so the Native
+            // resolver can compare compound indices and single-layer functions.
+            if (nativeClassifier) return;
             ReconcileOverlappingMaterialLines(block);
             Entity[] originalOrder = block.GetSortedEntities().ToArray();
             var groups = block.Entities.Where(entity => entity is not Line && materialBoundaries.ContainsKey(entity))

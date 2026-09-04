@@ -75,6 +75,10 @@ namespace ChangExport.DwgProcessing
         // Shared compound-layer boundaries keep the interior/bottom layer in
         // Revit's exterior-to-interior or top-to-bottom compound order.
         public int BoundaryPriority { get; set; }
+        // Separate single-layer walls use their Revit compound-layer function
+        // to resolve an exactly coincident boundary. Zero keeps the historical
+        // compound-index/Native-order behavior.
+        public int FunctionPriority { get; set; }
         // Optional native category-layer gate. Material Part markers may only
         // classify native entities that came from the same Revit source category.
         public List<string> SourceLayers { get; set; } = new();
@@ -181,6 +185,7 @@ namespace ChangExport.DwgProcessing
         public string RuleId { get; set; } = "";
         public string TargetLayer { get; set; } = "";
         public int BoundaryPriority { get; set; }
+        public int FunctionPriority { get; set; }
         public bool RemapFills { get; set; }
         public bool Wrapping { get; set; }
         public bool PreserveNative { get; set; }

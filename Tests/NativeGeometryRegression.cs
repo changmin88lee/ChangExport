@@ -182,7 +182,10 @@ internal static class NativeGeometryRegression
             && ownershipEntities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-GENERIC"
                 && Math.Abs(line.StartPoint.Y - 10) < 1e-8),
             "Compound function gates and a higher unfiltered owner preserve the original Native boundary");
-        check(ownershipEntities.OfType<Line>().Count(line => line.Layer.Name == "CEMENT") == 2,
+        check(ownershipEntities.OfType<Line>().Any(line => line.Layer.Name == "CEMENT"
+                && Math.Abs(line.StartPoint.Y - 20) < 1e-8)
+            && ownershipEntities.OfType<Line>().Any(line => line.Layer.Name == "CEMENT"
+                && Math.Abs(line.StartPoint.Y - 30) < 1e-8),
             "The actual inner compound index wins and same-target markers retain their greatest priority");
         check(ownershipEntities.OfType<Line>().Count(line => line.Layer.Name == "POLY-TYPE") == 2,
             "Straight segments extracted from an L-shaped marker polyline classify Native lines");
@@ -193,6 +196,60 @@ internal static class NativeGeometryRegression
         check(ownershipResponse.NativeOverlayRuleDiagnostics.Single(diagnostic => diagnostic.MarkerAci == 211).PreservedEntities > 0
             && !ownershipResponse.CustomRuleEntityCounts.ContainsKey("__compound_owner__"),
             "Ownership-only markers report Native preservation without becoming an output rule");
+
+        CadDocument singleNative = DwgRegression.Sheet(), singleFiltered = DwgRegression.Sheet();
+        var singleNativeLayer = new Layer("SINGLE-NATIVE"); singleNative.Layers.Add(singleNativeLayer);
+        var singleMarkerLayer = new Layer("SINGLE-MARKER"); singleFiltered.Layers.Add(singleMarkerLayer);
+        foreach (double y in new[] { 200d, 210d, 220d, 230d })
+        {
+            singleNative.Entities.Add(new Line { StartPoint = new XYZ(0, y, 0), EndPoint = new XYZ(100, y, 0), Layer = singleNativeLayer });
+            singleFiltered.Entities.Add(new Line { StartPoint = new XYZ(0, y, 0), EndPoint = new XYZ(100, y, 0),
+                Layer = singleMarkerLayer, Color = new ACadSharp.Color(210) });
+        }
+        singleFiltered.Entities.Add(new Line { StartPoint = new XYZ(0, 200, 0), EndPoint = new XYZ(100, 200, 0),
+            Layer = singleMarkerLayer, Color = new ACadSharp.Color(211) });
+        singleFiltered.Entities.Add(new Line { StartPoint = new XYZ(0, 210, 0), EndPoint = new XYZ(100, 210, 0),
+            Layer = singleMarkerLayer, Color = new ACadSharp.Color(212) });
+        singleFiltered.Entities.Add(new Line { StartPoint = new XYZ(0, 230, 0), EndPoint = new XYZ(100, 230, 0),
+            Layer = singleMarkerLayer, Color = new ACadSharp.Color(213) });
+        string singleNativePath = Path.Combine(output, "nge-single-native.dwg");
+        string singleFilteredPath = Path.Combine(output, "nge-single-filtered.dwg");
+        string singleResultPath = Path.Combine(output, "nge-single-result.dwg");
+        DwgWriter.Write(singleNativePath, singleNative); DwgWriter.Write(singleFilteredPath, singleFiltered);
+        BridgeResponse singleResponse = new ManagedDwgProcessor().Run(new BridgeRequest
+        {
+            Operation = "Flatten", OutputPath = singleResultPath, FilterReferencePath = singleFilteredPath,
+            ColorRemaps = new()
+            {
+                new() { MarkerAci = 210, Layer = "CEMENT", Color = 4, RuleId = "single-finish1",
+                    BoundaryPriority = 1, FunctionPriority = 2, SourceLayers = new() { "SINGLE-NATIVE" } },
+                new() { MarkerAci = 211, Layer = "", Color = 7, RuleId = "__compound_owner__",
+                    BoundaryPriority = 1, FunctionPriority = 6, SourceLayers = new() { "SINGLE-NATIVE" }, PreserveNative = true },
+                new() { MarkerAci = 212, Layer = "FINISH2", Color = 5, RuleId = "single-finish2",
+                    BoundaryPriority = 1, FunctionPriority = 3, SourceLayers = new() { "SINGLE-NATIVE" } },
+                new() { MarkerAci = 213, Layer = "", Color = 7, RuleId = "__compound_owner__",
+                    BoundaryPriority = 1, FunctionPriority = 2, SourceLayers = new() { "SINGLE-NATIVE" }, PreserveNative = true }
+            }
+        }, singleNativePath, output);
+        Entity[] singleEntities = DwgRegression.Walk(DwgReader.Read(singleResultPath).ModelSpace).ToArray();
+        bool SingleLine(string layer, double y) => singleEntities.OfType<Line>().Any(line => line.Layer.Name == layer
+            && Math.Abs(line.StartPoint.Y - y) < 1e-8 && Math.Abs(line.EndPoint.Y - y) < 1e-8);
+        string SingleLayers(double y) => string.Join(",", singleEntities.OfType<Line>()
+            .Where(line => Math.Abs(line.StartPoint.Y - y) < 1e-8 && Math.Abs(line.EndPoint.Y - y) < 1e-8)
+            .Select(line => line.Layer.Name));
+        NativeOverlayRuleDiagnostic singleStructure = singleResponse.NativeOverlayRuleDiagnostics
+            .Single(diagnostic => diagnostic.MarkerAci == 211);
+        check(SingleLine("SINGLE-NATIVE", 200),
+            "A separate Structure wall owns an exact boundary shared with a Finish1 wall: " + SingleLayers(200)
+                + $" / classified={singleStructure.ClassifiedEntities}, accepted={singleStructure.AcceptedSourceCandidates}, preserved={singleStructure.PreservedEntities}");
+        check(SingleLine("FINISH2", 210),
+            "A separate Finish2 wall owns an exact boundary shared with a Finish1 wall");
+        check(SingleLine("CEMENT", 220),
+            "An exposed single-layer Finish1 boundary keeps its material filter");
+        check(SingleLine("CEMENT", 230),
+            "Equal single-layer functions retain one deterministic owner");
+        check(singleResponse.NativeOverlayRuleDiagnostics.Single(diagnostic => diagnostic.MarkerAci == 211).FunctionPriority == 6,
+            "Single-layer function ownership rank is retained in diagnostics");
 
         CadDocument duplicateNative = DwgRegression.Sheet(), duplicateFiltered = DwgRegression.Sheet();
         var duplicateLayer = new Layer("NATIVE-KEEP"); duplicateNative.Layers.Add(duplicateLayer);

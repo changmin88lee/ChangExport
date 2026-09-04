@@ -19,6 +19,22 @@ internal static class TemporaryFilterExport
     /// </summary>
     internal static int CompoundLayerBoundaryPriority(int layerIndex) => Math.Max(0, layerIndex) + 1;
 
+    /// <summary>
+    /// Ownership order for exactly coincident boundaries of separate
+    /// single-layer walls. This does not replace the interior-side index rule
+    /// inside one compound wall.
+    /// </summary>
+    internal static int SingleLayerFunctionPriority(MaterialFunctionAssignment function) => function switch
+    {
+        MaterialFunctionAssignment.Structure or MaterialFunctionAssignment.StructuralDeck => 6,
+        MaterialFunctionAssignment.Substrate => 5,
+        MaterialFunctionAssignment.Insulation => 4,
+        MaterialFunctionAssignment.Finish2 => 3,
+        MaterialFunctionAssignment.Finish1 => 2,
+        MaterialFunctionAssignment.Membrane => 1,
+        _ => 0
+    };
+
     internal sealed class Result
     {
         public string Drawing { get; set; } = "";
@@ -66,16 +82,19 @@ internal static class TemporaryFilterExport
         var markers = new Dictionary<string, (Color Projection, Color Cut)>();
         var remapsByRgb = new Dictionary<int, ColorLayerRemap>();
         (Color Projection, Color Cut) Register(string key, string projectionLayer, int projectionColor,
-            string cutLayer, int cutColor, string ruleId, bool fills, int priority, bool preserveNative = false)
+            string cutLayer, int cutColor, string ruleId, bool fills, int priority, bool preserveNative = false,
+            int functionPriority = 0)
         {
             if (markers.TryGetValue(key, out var existing)) return existing;
             if (available.Count < 2) throw new InvalidOperationException("기존 도면 색상과 충돌하지 않는 필터 식별색이 부족합니다. 원본 출력은 보존했습니다.");
             int projection = available.Dequeue(), cut = available.Dequeue();
             var pair = (ToRevit(projection), ToRevit(cut)); markers[key] = pair;
             var projectionMap = new ColorLayerRemap { MarkerAci = projection, Layer = projectionLayer, Color = projectionColor,
-                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority, PreserveNative = preserveNative };
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority, PreserveNative = preserveNative,
+                FunctionPriority = functionPriority };
             var cutMap = new ColorLayerRemap { MarkerAci = cut, Layer = cutLayer, Color = cutColor,
-                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority, PreserveNative = preserveNative };
+                RuleId = ruleId, RemapFills = fills, BoundaryPriority = priority, PreserveNative = preserveNative,
+                FunctionPriority = functionPriority };
             result.Remaps.Add(projectionMap); result.Remaps.Add(cutMap);
             remapsByRgb[Rgb(projection)] = projectionMap; remapsByRgb[Rgb(cut)] = cutMap;
             if (!preserveNative) result.MatchedElements.TryAdd(ruleId, 0);
@@ -183,14 +202,14 @@ internal static class TemporaryFilterExport
         IReadOnlyCollection<ElementId> CompoundMaterials(Document owner, Element element)
         {
             if (owner.GetElement(element.GetTypeId()) is not HostObjAttributes type
-                || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure) return Array.Empty<ElementId>();
+                || type.GetCompoundStructure() is not { LayerCount: >= 1 } structure) return Array.Empty<ElementId>();
             return structure.GetLayers().Select(layer => layer.MaterialId)
                 .Where(id => id != ElementId.InvalidElementId).Distinct().ToList();
         }
         int CompoundLayerIndex(Document owner, Element sourceElement, Part part, ElementId materialId, string materialName)
         {
             if (owner.GetElement(sourceElement.GetTypeId()) is not HostObjAttributes type
-                || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure) return 0;
+                || type.GetCompoundStructure() is not { LayerCount: >= 1 } structure) return 0;
             var layers = structure.GetLayers();
             var candidates = Enumerable.Range(0, layers.Count).Where(index =>
             {
@@ -229,8 +248,24 @@ internal static class TemporaryFilterExport
         static bool IsLayeredWallOrFloor(Document owner, Element element)
         {
             if (element.Category?.Id.Value is not ((long)BuiltInCategory.OST_Walls or (long)BuiltInCategory.OST_Floors)) return false;
-            return owner.GetElement(element.GetTypeId()) is HostObjAttributes type
-                && type.GetCompoundStructure() is { LayerCount: >= 2 };
+            if (owner.GetElement(element.GetTypeId()) is not HostObjAttributes type
+                || type.GetCompoundStructure() is not { } structure) return false;
+            return structure.LayerCount >= 2
+                || element.Category.Id.Value == (long)BuiltInCategory.OST_Walls && structure.LayerCount == 1;
+        }
+        static bool IsSingleLayerWall(Document owner, Element element) => element.Category?.Id.Value == (long)BuiltInCategory.OST_Walls
+            && owner.GetElement(element.GetTypeId()) is HostObjAttributes type
+            && type.GetCompoundStructure() is { LayerCount: 1 };
+        static bool BoxesTouch(Element first, Element second)
+        {
+            BoundingBoxXYZ? a = first.get_BoundingBox(null), b = second.get_BoundingBox(null);
+            if (a == null || b == null) return false;
+            // Candidate discovery may be generous; the NGE still requires an
+            // exact coincident DWG line before ownership can change.
+            double margin = UnitUtils.ConvertToInternalUnits(1, UnitTypeId.Millimeters);
+            return a.Min.X <= b.Max.X + margin && a.Max.X + margin >= b.Min.X
+                && a.Min.Y <= b.Max.Y + margin && a.Max.Y + margin >= b.Min.Y
+                && a.Min.Z <= b.Max.Z + margin && a.Max.Z + margin >= b.Min.Z;
         }
         static LinkElementId? PartSource(Part part)
         {
@@ -364,6 +399,32 @@ internal static class TemporaryFilterExport
                     }
                     catch (Autodesk.Revit.Exceptions.ArgumentException) { }
                 }
+                // A material-matched single-layer wall needs its touching
+                // single-layer neighbours in the classifier drawing as
+                // ownership-only Parts. Their markers never alter geometry by
+                // themselves; they only compete on an exactly coincident line.
+                foreach (View view in usableViews.Where(candidate => candidate is not ViewSheet))
+                {
+                    var matchedSingles = (sourcesByView.GetValueOrDefault(view.Id) ?? new())
+                        .Select(document.GetElement).Where(element => element != null && IsSingleLayerWall(document, element))
+                        .Cast<Element>().ToList();
+                    if (matchedSingles.Count == 0) continue;
+                    foreach (Wall candidate in new FilteredElementCollector(document, view.Id)
+                        .OfClass(typeof(Wall)).Cast<Wall>())
+                    {
+                        if (!IsSingleLayerWall(document, candidate) || matchedSingles.Any(match => match.Id == candidate.Id)
+                            || !matchedSingles.Any(match => BoxesTouch(match, candidate))) continue;
+                        sourcesByView.TryAdd(view.Id, new()); sourcesByView[view.Id].Add(candidate.Id);
+                        viewsWithMaterialParts.Add(view.Id);
+                        if (PartUtils.HasAssociatedParts(document, candidate.Id)) continue;
+                        try
+                        {
+                            if (PartUtils.AreElementsValidForCreateParts(document, new[] { candidate.Id }))
+                                partSources.Add(candidate.Id);
+                        }
+                        catch (Autodesk.Revit.Exceptions.ArgumentException) { }
+                    }
+                }
                 if (materialRules.Count > 0)
                 foreach (View view in usableViews.Where(candidate => candidate is not ViewSheet))
                 foreach (RevitLinkInstance link in new FilteredElementCollector(document, view.Id)
@@ -377,9 +438,16 @@ internal static class TemporaryFilterExport
                         if (index.Count == 0) continue;
                         if (!linkedCandidates.TryGetValue(linked, out List<Element>? candidates))
                         {
-                            candidates = new FilteredElementCollector(linked).WhereElementIsNotElementType()
+                            var matched = new FilteredElementCollector(linked).WhereElementIsNotElementType()
                                 .Where(element => IsLayeredWallOrFloor(linked, element)
                                     && CompoundMaterials(linked, element).Any(index.ContainsKey)).ToList();
+                            var matchedSingles = matched.Where(element => IsSingleLayerWall(linked, element)).ToList();
+                            var owners = matchedSingles.Count == 0 ? new List<Element>()
+                                : new FilteredElementCollector(linked).OfClass(typeof(Wall)).WhereElementIsNotElementType()
+                                    .Where(element => IsSingleLayerWall(linked, element)
+                                        && matchedSingles.All(match => match.Id != element.Id)
+                                        && matchedSingles.Any(match => BoxesTouch(match, element))).ToList();
+                            candidates = matched.Concat(owners).DistinctBy(element => element.Id).ToList();
                             linkedCandidates[linked] = candidates;
                         }
                         foreach (Element element in candidates)
@@ -431,7 +499,7 @@ internal static class TemporaryFilterExport
                     }
                 }
                 if (createdLinkedSources > 0)
-                    warnings.Add($"링크 재료 고유 식별: 링크 복합 벽·바닥 {createdLinkedSources:N0}개를 호스트 임시 Part로 만들고 재료 ID별 식별색을 적용했습니다.");
+                    warnings.Add($"링크 재료·소유권 식별: 링크 복합 벽·바닥 {createdLinkedSources:N0}개를 호스트 임시 Part로 만들고 재료·단일벽 기능별 식별색을 적용했습니다.");
                 result.LinkedMaterialPartSources = createdLinkedSources;
                 foreach (View view in usableViews.Where(v => v is not ViewSheet && viewsWithMaterialParts.Contains(v.Id)))
                 {
@@ -450,7 +518,8 @@ internal static class TemporaryFilterExport
                 {
                     if (element is ImportInstance || element.Category == null) continue;
                     MaterialLayerRule? materialRule = null; int priority = 100; Element sourceElement = element;
-                    int compoundLayerIndex = -1; string compoundLayerFunction = "", diagnosticMaterialName = "";
+                    int compoundLayerIndex = -1, functionPriority = 0;
+                    string compoundLayerFunction = "", diagnosticMaterialName = "";
                     MaterialFunctionAssignment? compoundLayerFunctionValue = null;
                     Document sourceOwner = document;
                     bool suppressHostFills = false;
@@ -495,6 +564,8 @@ internal static class TemporaryFilterExport
                             {
                                 compoundLayerFunctionValue = diagnosticStructure.GetLayers()[layerIndex].Function;
                                 compoundLayerFunction = compoundLayerFunctionValue.Value.ToString();
+                                if (diagnosticStructure.LayerCount == 1 && IsSingleLayerWall(sourceOwner, sourceElement))
+                                    functionPriority = SingleLayerFunctionPriority(compoundLayerFunctionValue.Value);
                             }
                             priority = CompoundLayerBoundaryPriority(layerIndex);
                         }
@@ -508,8 +579,9 @@ internal static class TemporaryFilterExport
                     }
                     else if (materialRule != null)
                     {
-                        marker = Register($"material:{materialRule.RuleId}:{priority}:{sourceElement.Category?.Id.Value}", materialRule.Layer, materialRule.Color,
-                            materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
+                        marker = Register($"material:{materialRule.RuleId}:{priority}:{functionPriority}:{sourceElement.Category?.Id.Value}",
+                            materialRule.Layer, materialRule.Color, materialRule.Layer, materialRule.Color,
+                            materialRule.RuleId, true, priority, functionPriority: functionPriority);
                         RestrictToCompoundLayer(marker, sourceElement, compoundLayerFunctionValue);
                         RecordMarkerProvenance(marker, sourceOwner, sourceElement,
                             materialRule.MaterialName.Length > 0 ? materialRule.MaterialName : diagnosticMaterialName,
@@ -528,9 +600,9 @@ internal static class TemporaryFilterExport
                         }
                         if (element is Part && compoundLayerIndex >= 0)
                         {
-                            marker = Register($"type-part:{typeRule.RuleId}:{priority}:{sourceElement.Category?.Id.Value}",
+                            marker = Register($"type-part:{typeRule.RuleId}:{priority}:{functionPriority}:{sourceElement.Category?.Id.Value}",
                                 typeRule.Layer, typeRule.Color, typeRule.CutLayer, typeRule.CutColor,
-                                typeRule.RuleId, false, priority);
+                                typeRule.RuleId, false, priority, functionPriority: functionPriority);
                             RestrictToCompoundLayer(marker, sourceElement, compoundLayerFunctionValue);
                             RecordMarkerProvenance(marker, sourceOwner, sourceElement, diagnosticMaterialName,
                                 compoundLayerIndex, compoundLayerFunction);
@@ -541,8 +613,9 @@ internal static class TemporaryFilterExport
                     else if (element is Part && compoundLayerIndex >= 0)
                     {
                         const string ownerRule = "__compound_owner__";
-                        marker = Register($"owner:{sourceElement.Category?.Id.Value}:{priority}:{compoundLayerFunction}",
-                            "", 7, "", 7, ownerRule, false, priority, preserveNative: true);
+                        marker = Register($"owner:{sourceElement.Category?.Id.Value}:{priority}:{functionPriority}:{compoundLayerFunction}",
+                            "", 7, "", 7, ownerRule, false, priority, preserveNative: true,
+                            functionPriority: functionPriority);
                         RestrictToCompoundLayer(marker, sourceElement, compoundLayerFunctionValue);
                         RecordMarkerProvenance(marker, sourceOwner, sourceElement, diagnosticMaterialName,
                             compoundLayerIndex, compoundLayerFunction);

@@ -46,7 +46,7 @@ public sealed partial class ManagedDwgProcessor
             string temporary = NativeOverlayLayerPrefix + "C" + map.MarkerAci.ToString(CultureInfo.InvariantCulture);
             targets[temporary] = new OverlayTarget(map.Layer, map.Color, map.RuleId,
                 map.BoundaryPriority, map.RuleId.StartsWith("wrap:", StringComparison.Ordinal), map.RemapFills,
-                new(map.SourceLayers), map.MarkerAci, map.PreserveNative);
+                new(map.SourceLayers), map.MarkerAci, map.PreserveNative, map.FunctionPriority);
             return new ColorLayerRemap
             {
                 MarkerAci = map.MarkerAci,
@@ -55,6 +55,7 @@ public sealed partial class ManagedDwgProcessor
                 RuleId = map.RuleId,
                 RemapFills = map.RemapFills,
                 BoundaryPriority = map.BoundaryPriority,
+                FunctionPriority = map.FunctionPriority,
                 SourceLayers = new(map.SourceLayers),
                 PreserveNative = map.PreserveNative
             };
@@ -63,7 +64,7 @@ public sealed partial class ManagedDwgProcessor
         {
             string temporary = NativeOverlayLayerPrefix + "A" + index.ToString(CultureInfo.InvariantCulture);
             targets[temporary] = new OverlayTarget(map.Layer, map.Color, map.RuleId,
-                map.BoundaryPriority, false, true, new(), -(index + 1), false);
+                map.BoundaryPriority, false, true, new(), -(index + 1), false, 0);
             return new MaterialAppearanceRemap
             {
                 Pattern = map.Pattern,
@@ -129,6 +130,7 @@ public sealed partial class ManagedDwgProcessor
             RuleId = map.RuleId,
             TargetLayer = map.Layer,
             BoundaryPriority = map.BoundaryPriority,
+            FunctionPriority = map.FunctionPriority,
             RemapFills = map.RemapFills,
             Wrapping = map.RuleId.StartsWith("wrap:", StringComparison.Ordinal),
             PreserveNative = map.PreserveNative,
@@ -607,6 +609,7 @@ public sealed partial class ManagedDwgProcessor
                     .Select(pair => $"{pair.Key} {pair.Value:N0}"));
             string kind = diagnostic.PreserveNative ? "Native 소유권 상세" : "Native 판정 상세";
             response.Warnings.Add($"{kind} · ACI {diagnostic.MarkerAci} · 규칙 {diagnostic.RuleId} · 대상 '{diagnostic.TargetLayer}'"
+                + $" · 경계순위 {diagnostic.BoundaryPriority} / 기능순위 {diagnostic.FunctionPriority}"
                 + $" · 분류 {diagnostic.ClassifiedEntities:N0}(직선 {diagnostic.ClassifiedLines:N0})"
                 + $" · 고유서명 {diagnostic.UniqueMarkerSignatures:N0} / 정확 {diagnostic.ExactNativeSignatures:N0} / 없음 {diagnostic.MissingNativeSignatures:N0}"
                 + $" · 직선서명 {diagnostic.UniqueMarkerLineSignatures:N0} / 정확 {diagnostic.ExactNativeLineSignatures:N0}"
@@ -641,8 +644,22 @@ public sealed partial class ManagedDwgProcessor
         // greatest real compound-layer rank instead of whichever marker happened
         // to be enumerated first.
         var candidates = source.GroupBy(TargetKey, StringComparer.Ordinal)
-            .Select(group => group.OrderByDescending(TargetRank).ThenBy(candidate => candidate.MarkerAci).First()).ToList();
+            .Select(group => group.OrderByDescending(candidate => candidate.Wrapping)
+                .ThenByDescending(candidate => candidate.FunctionPriority)
+                .ThenByDescending(TargetRank).ThenBy(candidate => candidate.MarkerAci).First()).ToList();
         if (candidates.Count == 0) return null;
+        // A positive function rank is emitted only for separate single-layer
+        // walls. When two such objects share an exact boundary, resolve it by
+        // the user-defined Revit layer-function order. Equal functions have no
+        // semantic winner, so retain a deterministic representative instead of
+        // introducing run-to-run randomness.
+        var functional = candidates.Where(candidate => candidate.FunctionPriority > 0).ToList();
+        if (functional.Count >= 2)
+        {
+            int bestFunction = functional.Max(candidate => candidate.FunctionPriority);
+            return functional.Where(candidate => candidate.FunctionPriority == bestFunction)
+                .OrderBy(candidate => candidate.MarkerAci).First();
+        }
         int bestRank = candidates.Max(TargetRank);
         var best = candidates.Where(candidate => TargetRank(candidate) == bestRank).ToList();
         // A same-rank unfiltered owner means the geometry cannot be attributed to
@@ -863,7 +880,8 @@ public sealed partial class ManagedDwgProcessor
     }
 
     private sealed record OverlayTarget(string Layer, int Color, string RuleId,
-        int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers, int MarkerAci, bool PreserveNative);
+        int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers, int MarkerAci, bool PreserveNative,
+        int FunctionPriority);
     private sealed record OverlayLine(double Start, double End, OverlayTarget Target);
     private sealed record OverlayWorldLine(string Key, double Start, double End, bool Forward);
     private sealed record OverlayPiece(double Start, double End, OverlayTarget? Target);
