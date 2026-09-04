@@ -46,7 +46,7 @@ public sealed partial class ManagedDwgProcessor
             string temporary = NativeOverlayLayerPrefix + "C" + map.MarkerAci.ToString(CultureInfo.InvariantCulture);
             targets[temporary] = new OverlayTarget(map.Layer, map.Color, map.RuleId,
                 map.BoundaryPriority, map.RuleId.StartsWith("wrap:", StringComparison.Ordinal), map.RemapFills,
-                new(map.SourceLayers));
+                new(map.SourceLayers), map.MarkerAci);
             return new ColorLayerRemap
             {
                 MarkerAci = map.MarkerAci,
@@ -62,7 +62,7 @@ public sealed partial class ManagedDwgProcessor
         {
             string temporary = NativeOverlayLayerPrefix + "A" + index.ToString(CultureInfo.InvariantCulture);
             targets[temporary] = new OverlayTarget(map.Layer, map.Color, map.RuleId,
-                map.BoundaryPriority, false, true, new());
+                map.BoundaryPriority, false, true, new(), -(index + 1));
             return new MaterialAppearanceRemap
             {
                 Pattern = map.Pattern,
@@ -122,6 +122,60 @@ public sealed partial class ManagedDwgProcessor
         IReadOnlyDictionary<string, OverlayTarget> targets, BridgeRequest request,
         BridgeResponse response, Action check)
     {
+        var diagnostics = request.ColorRemaps.ToDictionary(map => map.MarkerAci, map => new NativeOverlayRuleDiagnostic
+        {
+            MarkerAci = map.MarkerAci,
+            RuleId = map.RuleId,
+            TargetLayer = map.Layer,
+            BoundaryPriority = map.BoundaryPriority,
+            RemapFills = map.RemapFills,
+            Wrapping = map.RuleId.StartsWith("wrap:", StringComparison.Ordinal),
+            ExpectedRevitMatches = request.ExpectedRuleMatches.GetValueOrDefault(map.RuleId),
+            SourceLayers = new(map.SourceLayers),
+            SourceCategories = new(map.DiagnosticSourceCategories),
+            CompoundLayerIndices = new(map.DiagnosticCompoundLayerIndices),
+            CompoundLayerFunctions = new(map.DiagnosticCompoundLayerFunctions),
+            MaterialNames = new(map.DiagnosticMaterialNames),
+            SourceElementCount = map.DiagnosticSourceElementCount,
+            SourceElementIds = new(map.DiagnosticSourceElementIds)
+        });
+        response.NativeOverlayRuleDiagnostics = request.ColorRemaps
+            .Select(map => diagnostics[map.MarkerAci]).ToList();
+        var markerSignatures = diagnostics.Keys.ToDictionary(marker => marker,
+            _ => new HashSet<string>(StringComparer.Ordinal));
+        var markerLineSignatures = diagnostics.Keys.ToDictionary(marker => marker,
+            _ => new HashSet<string>(StringComparer.Ordinal));
+        static void Increment(Dictionary<string, int> counts, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) key = "(없음)";
+            counts[key] = counts.GetValueOrDefault(key) + 1;
+        }
+        NativeOverlayRuleDiagnostic? Diagnostic(OverlayTarget target) => target.MarkerAci > 0
+            && diagnostics.TryGetValue(target.MarkerAci, out NativeOverlayRuleDiagnostic? value) ? value : null;
+        static string ShortGeometry(string value) => value.Length <= 240 ? value : value[..240] + "…";
+        void Sample(OverlayTarget target, string result, string geometry, string nativeLayer = "",
+            string nativeType = "", string detail = "")
+        {
+            NativeOverlayRuleDiagnostic? diagnostic = Diagnostic(target);
+            if (diagnostic == null) return;
+            if (diagnostic.Samples.Count >= 20) { diagnostic.OmittedSamples++; return; }
+            diagnostic.Samples.Add(new NativeOverlayDiagnosticSample
+            {
+                Result = result,
+                MarkerGeometry = ShortGeometry(geometry),
+                NativeLayer = nativeLayer,
+                NativeEntityType = nativeType,
+                Detail = detail
+            });
+        }
+        void Reject(OverlayTarget target, string reason, string geometry, string nativeLayer = "",
+            string nativeType = "", string detail = "")
+        {
+            NativeOverlayRuleDiagnostic? diagnostic = Diagnostic(target);
+            if (diagnostic == null) return;
+            Increment(diagnostic.RejectionReasons, reason);
+            Sample(target, reason, geometry, nativeLayer, nativeType, detail);
+        }
         var marks = new Dictionary<string, List<OverlayTarget>>(StringComparer.Ordinal);
         var lineMarks = new Dictionary<string, List<OverlayLine>>(StringComparer.Ordinal);
         int classifiedOccurrences = 0;
@@ -129,8 +183,22 @@ public sealed partial class ManagedDwgProcessor
         {
             check();
             if (!targets.TryGetValue(entity.Layer.Name, out OverlayTarget? target)) return;
+            if (Diagnostic(target) is { } diagnostic)
+            {
+                diagnostic.ClassifiedEntities++;
+                Increment(diagnostic.MarkerEntityTypes, entity.ObjectName);
+                if (entity is Line) diagnostic.ClassifiedLines++;
+            }
             string? signature = NativeSignature(entity, transform);
-            if (signature == null) return;
+            if (signature == null)
+            {
+                if (Diagnostic(target) is { } unsupported) unsupported.UnsupportedMarkerEntities++;
+                Reject(target, "지원하지 않는 분류 형상", entity.ObjectName, nativeType: entity.ObjectName);
+                return;
+            }
+            if (markerSignatures.TryGetValue(target.MarkerAci, out HashSet<string>? signatures)) signatures.Add(signature);
+            if (entity is Line && markerLineSignatures.TryGetValue(target.MarkerAci, out HashSet<string>? lineSignatures))
+                lineSignatures.Add(signature);
             if (!marks.TryGetValue(signature, out List<OverlayTarget>? values))
                 marks[signature] = values = new();
             values.Add(target);
@@ -148,7 +216,12 @@ public sealed partial class ManagedDwgProcessor
         {
             OverlayTarget? selected = ResolveTarget(pair.Value);
             if (selected == null)
-            { ambiguous += pair.Value.Count; continue; }
+            {
+                ambiguous += pair.Value.Count;
+                foreach (OverlayTarget target in pair.Value)
+                    Reject(target, "동일 형상 분류 충돌", pair.Key, detail: "같은 형상에 서로 다른 최우선 대상이 있습니다.");
+                continue;
+            }
         }
 
         var nativeSignatures = new HashSet<string>(StringComparer.Ordinal);
@@ -175,6 +248,21 @@ public sealed partial class ManagedDwgProcessor
             {
                 IReadOnlyList<OverlayLine> candidates = lineMarks.TryGetValue(nativeLine.Key, out List<OverlayLine>? lineValues)
                     ? lineValues : Array.Empty<OverlayLine>();
+                foreach (OverlayLine candidate in candidates.Where(candidate => candidate.End > nativeLine.Start + 1e-5
+                    && candidate.Start < nativeLine.End - 1e-5))
+                {
+                    if (Diagnostic(candidate.Target) is not { } diagnostic) continue;
+                    diagnostic.CollinearNativeCandidates++;
+                    Increment(diagnostic.CandidateNativeLayers, entity.Layer.Name);
+                    if (AcceptsSourceLayer(candidate.Target, entity.Layer.Name)) diagnostic.AcceptedSourceCandidates++;
+                    else
+                    {
+                        diagnostic.RejectedSourceCandidates++;
+                        Increment(diagnostic.RejectedNativeLayers, entity.Layer.Name);
+                        Reject(candidate.Target, "Native 원본 레이어 제한", nativeLine.Key, entity.Layer.Name,
+                            entity.ObjectName, "형상은 겹치지만 SourceLayers에 없는 원본 레이어입니다.");
+                    }
+                }
                 if (!lineOccurrences.TryGetValue(nativeEntity, out List<List<OverlayPiece>>? occurrences))
                     lineOccurrences[nativeEntity] = occurrences = new();
                 occurrences.Add(CoveredLinePieces(nativeLine, candidates, entity.Layer.Name));
@@ -182,12 +270,45 @@ public sealed partial class ManagedDwgProcessor
                 return;
             }
             OverlayTarget? target;
-            if (!marks.TryGetValue(signature, out List<OverlayTarget>? exact)
-                || (target = ResolveTarget(exact.Where(candidate => AcceptsSourceLayer(candidate, entity.Layer.Name)))) == null) return;
+            if (!marks.TryGetValue(signature, out List<OverlayTarget>? exact)) return;
+            foreach (OverlayTarget candidate in exact)
+            {
+                if (Diagnostic(candidate) is not { } diagnostic) continue;
+                Increment(diagnostic.CandidateNativeLayers, entity.Layer.Name);
+                if (AcceptsSourceLayer(candidate, entity.Layer.Name)) diagnostic.AcceptedSourceCandidates++;
+                else
+                {
+                    diagnostic.RejectedSourceCandidates++;
+                    Increment(diagnostic.RejectedNativeLayers, entity.Layer.Name);
+                    Reject(candidate, "Native 원본 레이어 제한", signature, entity.Layer.Name,
+                        entity.ObjectName, "정확한 형상이지만 SourceLayers에 없는 원본 레이어입니다.");
+                }
+            }
+            if ((target = ResolveTarget(exact.Where(candidate => AcceptsSourceLayer(candidate, entity.Layer.Name)))) == null) return;
             if (!assignments.TryGetValue(entity, out List<OverlayTarget>? values))
                 assignments[entity] = values = new();
             values.Add(target);
         });
+
+        foreach (var pair in markerSignatures)
+        {
+            NativeOverlayRuleDiagnostic diagnostic = diagnostics[pair.Key];
+            diagnostic.UniqueMarkerSignatures = pair.Value.Count;
+            diagnostic.ExactNativeSignatures = pair.Value.Count(nativeSignatures.Contains);
+            diagnostic.MissingNativeSignatures = pair.Value.Count - diagnostic.ExactNativeSignatures;
+            HashSet<string> lineSignatures = markerLineSignatures[pair.Key];
+            diagnostic.UniqueMarkerLineSignatures = lineSignatures.Count;
+            diagnostic.ExactNativeLineSignatures = lineSignatures.Count(nativeSignatures.Contains);
+            if (diagnostic.ExactNativeLineSignatures > 0 && diagnostic.CollinearNativeCandidates == 0)
+                diagnostic.RejectionReasons["직선 정확 형상은 있으나 공선 키 후보 없음"] = diagnostic.ExactNativeLineSignatures;
+            if (diagnostic.MissingNativeSignatures == 0) continue;
+            diagnostic.RejectionReasons["Native 정확 형상 없음"] = diagnostic.MissingNativeSignatures;
+            OverlayTarget? target = targets.Values.FirstOrDefault(candidate => candidate.MarkerAci == pair.Key);
+            if (target == null) continue;
+            foreach (string signature in pair.Value.Where(signature => !nativeSignatures.Contains(signature)).Take(20))
+                Sample(target, "Native 정확 형상 없음", signature,
+                    detail: "동일 서명이 없습니다. 직선은 별도의 공선·부분구간 후보 통계를 함께 확인하세요.");
+        }
 
         // A bounding-envelope hatch key can silently transfer a material to a
         // different hatch with the same extents. Hatch classification therefore
@@ -235,6 +356,11 @@ public sealed partial class ManagedDwgProcessor
             if (variants.Count != 1)
             {
                 sharedAmbiguous += occurrences.Count;
+                foreach (OverlayTarget target in occurrences.SelectMany(pieces => pieces)
+                    .Where(piece => piece.Target != null).Select(piece => piece.Target!).Distinct())
+                    Reject(target, "공유 블록 배치별 판정 불일치", PieceKey(occurrences[0]),
+                        pair.Key.Layer.Name, pair.Key.ObjectName,
+                        $"동일 블록 정의의 배치별 구간 판정이 {variants.Count:N0}가지입니다.");
                 continue;
             }
             List<OverlayPiece> pieces = occurrences[0];
@@ -242,11 +368,16 @@ public sealed partial class ManagedDwgProcessor
             if (pieces.Count == 1 && pieces[0].Target is { } whole)
             {
                 assignments[pair.Key] = new() { whole };
+                if (Diagnostic(whole) is { } diagnostic) diagnostic.FullLineAssignments++;
+                Sample(whole, "전체 직선 판정", NativeSignature(pair.Key, Transform.CreateTranslation(XYZ.Zero)) ?? "L",
+                    pair.Key.Layer.Name, pair.Key.ObjectName);
                 continue;
             }
             if (!lineOwners.ContainsKey(pair.Key))
             {
                 sharedAmbiguous += occurrences.Count;
+                foreach (OverlayTarget target in pieces.Where(piece => piece.Target != null).Select(piece => piece.Target!).Distinct())
+                    Reject(target, "원본 직선 소유 블록 없음", PieceKey(pieces), pair.Key.Layer.Name, pair.Key.ObjectName);
                 continue;
             }
             XYZ originalStart = pair.Key.StartPoint, originalEnd = pair.Key.EndPoint;
@@ -258,7 +389,13 @@ public sealed partial class ManagedDwgProcessor
                 clone.StartPoint = originalStart + (originalEnd - originalStart) * piece.Start;
                 clone.EndPoint = originalStart + (originalEnd - originalStart) * piece.End;
                 replacements.Add(clone);
-                if (piece.Target != null) assignments[clone] = new() { piece.Target };
+                if (piece.Target != null)
+                {
+                    assignments[clone] = new() { piece.Target };
+                    if (Diagnostic(piece.Target) is { } diagnostic) diagnostic.PartialLineAssignments++;
+                    Sample(piece.Target, "부분 직선 판정", PieceKey(new[] { piece }), pair.Key.Layer.Name,
+                        pair.Key.ObjectName, $"원본 직선 구간 {piece.Start:R}~{piece.End:R}");
+                }
             }
             lineReplacements[pair.Key] = replacements;
             partialLinesSplit++;
@@ -290,8 +427,15 @@ public sealed partial class ManagedDwgProcessor
         {
             OverlayTarget? selected = ResolveTarget(pair.Value);
             if (selected == null)
-            { sharedAmbiguous += pair.Value.Count; continue; }
+            {
+                sharedAmbiguous += pair.Value.Count;
+                foreach (OverlayTarget candidate in pair.Value)
+                    Reject(candidate, "최종 대상 충돌", pair.Key.ObjectName, pair.Key.Layer.Name,
+                        pair.Key.ObjectName, "한 Native 객체에 서로 다른 최우선 대상이 남았습니다.");
+                continue;
+            }
             OverlayTarget target = selected;
+            string nativeLayer = pair.Key.Layer.Name;
             if (!native.Layers.TryGetValue(target.Layer, out Layer? layer))
             {
                 layer = (Layer)pair.Key.Layer.Clone();
@@ -301,6 +445,13 @@ public sealed partial class ManagedDwgProcessor
             layer.Color = new ACadSharp.Color((short)target.Color);
             pair.Key.Layer = layer;
             if (pair.Key is not Hatch) pair.Key.Color = ACadSharp.Color.ByLayer;
+            if (Diagnostic(target) is { } diagnostic)
+            {
+                diagnostic.AppliedEntities++;
+                Increment(diagnostic.AppliedNativeLayers, nativeLayer);
+            }
+            Sample(target, "최종 적용", pair.Key.ObjectName, nativeLayer, pair.Key.ObjectName,
+                $"'{nativeLayer}' → '{target.Layer}'");
             counts[target.RuleId] = counts.GetValueOrDefault(target.RuleId) + 1;
             applied++;
         }
@@ -313,6 +464,28 @@ public sealed partial class ManagedDwgProcessor
         response.CustomRuleEntityCounts = counts;
         foreach (var group in counts)
             response.Warnings.Add($"Native 필터 레이어 · 규칙 {group.Key} · 원본 DWG 객체 {group.Value:N0}개 반영");
+        foreach (NativeOverlayRuleDiagnostic diagnostic in response.NativeOverlayRuleDiagnostics
+            .Where(diagnostic => diagnostic.ClassifiedEntities > 0 || diagnostic.ExpectedRevitMatches > 0))
+        {
+            if (diagnostic.AcceptedSourceCandidates > 0
+                && diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments == 0
+                && diagnostic.AppliedEntities == 0)
+                diagnostic.RejectionReasons["허용 후보 후 구간 소유자 미결정"] = diagnostic.AcceptedSourceCandidates;
+            if (diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments > 0
+                && diagnostic.AppliedEntities == 0)
+                diagnostic.RejectionReasons["구간 판정 후 최종 대상 미적용"] =
+                    diagnostic.FullLineAssignments + diagnostic.PartialLineAssignments;
+            string origins = diagnostic.AppliedNativeLayers.Count == 0 ? "없음" : string.Join(", ",
+                diagnostic.AppliedNativeLayers.OrderByDescending(pair => pair.Value).ThenBy(pair => pair.Key)
+                    .Select(pair => $"{pair.Key} {pair.Value:N0}"));
+            response.Warnings.Add($"Native 판정 상세 · ACI {diagnostic.MarkerAci} · 규칙 {diagnostic.RuleId} · 대상 '{diagnostic.TargetLayer}'"
+                + $" · 분류 {diagnostic.ClassifiedEntities:N0}(직선 {diagnostic.ClassifiedLines:N0})"
+                + $" · 고유서명 {diagnostic.UniqueMarkerSignatures:N0} / 정확 {diagnostic.ExactNativeSignatures:N0} / 없음 {diagnostic.MissingNativeSignatures:N0}"
+                + $" · 직선서명 {diagnostic.UniqueMarkerLineSignatures:N0} / 정확 {diagnostic.ExactNativeLineSignatures:N0}"
+                + $" · 공선후보 {diagnostic.CollinearNativeCandidates:N0} / 허용 {diagnostic.AcceptedSourceCandidates:N0} / 원본레이어 거절 {diagnostic.RejectedSourceCandidates:N0}"
+                + $" · 전체선 {diagnostic.FullLineAssignments:N0} / 부분선 {diagnostic.PartialLineAssignments:N0} / 최종 {diagnostic.AppliedEntities:N0}"
+                + $" · 최종 원본레이어 [{origins}]");
+        }
         if (unmatched > 0)
             response.Warnings.Add($"Native 형상 보호: 임시 분류 객체 {unmatched:N0}개는 Native와 1:1 동일 형상이 아닙니다. "
                 + "같은 직선에서 명확히 일치하는 구간은 분류에만 사용하고, 임시 객체 자체는 최종 DWG에 추가하지 않았습니다.");
@@ -518,7 +691,7 @@ public sealed partial class ManagedDwgProcessor
     }
 
     private sealed record OverlayTarget(string Layer, int Color, string RuleId,
-        int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers);
+        int Priority, bool Wrapping, bool RemapFills, List<string> SourceLayers, int MarkerAci);
     private sealed record OverlayLine(double Start, double End, OverlayTarget Target);
     private sealed record OverlayWorldLine(string Key, double Start, double End, bool Forward);
     private sealed record OverlayPiece(double Start, double End, OverlayTarget? Target);

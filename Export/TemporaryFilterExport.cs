@@ -100,6 +100,34 @@ internal static class TemporaryFilterExport
                     if (!map.SourceLayers.Contains(layer, StringComparer.OrdinalIgnoreCase)) map.SourceLayers.Add(layer);
             }
         }
+        var diagnosticElements = new Dictionary<ColorLayerRemap, HashSet<string>>();
+        void RecordMarkerProvenance((Color Projection, Color Cut) marker, Document owner, Element sourceElement,
+            string materialName, int layerIndex, string layerFunction)
+        {
+            string category = sourceElement.Category?.Name ?? "";
+            string elementKey = owner.Title + "|" + sourceElement.UniqueId;
+            foreach (Color color in new[] { marker.Projection, marker.Cut })
+            {
+                int rgb = (color.Red << 16) | (color.Green << 8) | color.Blue;
+                if (!remapsByRgb.TryGetValue(rgb, out ColorLayerRemap? map)) continue;
+                if (!string.IsNullOrWhiteSpace(category)
+                    && !map.DiagnosticSourceCategories.Contains(category, StringComparer.OrdinalIgnoreCase))
+                    map.DiagnosticSourceCategories.Add(category);
+                if (layerIndex >= 0 && !map.DiagnosticCompoundLayerIndices.Contains(layerIndex))
+                    map.DiagnosticCompoundLayerIndices.Add(layerIndex);
+                if (!string.IsNullOrWhiteSpace(layerFunction)
+                    && !map.DiagnosticCompoundLayerFunctions.Contains(layerFunction, StringComparer.OrdinalIgnoreCase))
+                    map.DiagnosticCompoundLayerFunctions.Add(layerFunction);
+                if (!string.IsNullOrWhiteSpace(materialName)
+                    && !map.DiagnosticMaterialNames.Contains(materialName, StringComparer.OrdinalIgnoreCase))
+                    map.DiagnosticMaterialNames.Add(materialName);
+                if (!diagnosticElements.TryGetValue(map, out HashSet<string>? elements))
+                    diagnosticElements[map] = elements = new(StringComparer.Ordinal);
+                if (!elements.Add(elementKey)) continue;
+                map.DiagnosticSourceElementCount = elements.Count;
+                if (map.DiagnosticSourceElementIds.Count < 24) map.DiagnosticSourceElementIds.Add(elementKey);
+            }
+        }
         Dictionary<ElementId, MaterialLayerRule> MaterialIndex(Document owner)
         {
             if (ReferenceEquals(owner, document)) return materialIndex;
@@ -380,6 +408,7 @@ internal static class TemporaryFilterExport
                 {
                     if (element is ImportInstance || element.Category == null) continue;
                     MaterialLayerRule? materialRule = null; int priority = 100; Element sourceElement = element;
+                    int compoundLayerIndex = -1; string compoundLayerFunction = "", diagnosticMaterialName = "";
                     Document sourceOwner = document;
                     bool suppressHostFills = false;
                     (Color Projection, Color Cut, string Match)? support = null;
@@ -409,12 +438,18 @@ internal static class TemporaryFilterExport
                             string materialName = (sourceOwner.GetElement(materialId) as Material)?.Name
                                 ?? (document.GetElement(materialId) as Material)?.Name
                                 ?? materialParameter?.AsValueString() ?? "";
+                            diagnosticMaterialName = materialName;
                             if (!MaterialIndex(sourceOwner).TryGetValue(materialId, out materialRule))
                             {
                                 materialRulesByName.TryGetValue(materialName, out materialRule);
                             }
                             int layerIndex = CompoundLayerIndex(sourceOwner, sourceElement, part, materialId,
                                 materialRule?.MaterialName ?? materialName);
+                            compoundLayerIndex = layerIndex;
+                            if (sourceOwner.GetElement(sourceElement.GetTypeId()) is HostObjAttributes diagnosticType
+                                && diagnosticType.GetCompoundStructure() is { } diagnosticStructure
+                                && layerIndex >= 0 && layerIndex < diagnosticStructure.LayerCount)
+                                compoundLayerFunction = diagnosticStructure.GetLayers()[layerIndex].Function.ToString();
                             priority = CompoundLayerBoundaryPriority(layerIndex);
                         }
                     }
@@ -430,6 +465,9 @@ internal static class TemporaryFilterExport
                         marker = Register($"material:{materialRule.RuleId}:{priority}:{sourceElement.Category?.Id.Value}", materialRule.Layer, materialRule.Color,
                             materialRule.Layer, materialRule.Color, materialRule.RuleId, true, priority);
                         RestrictToSourceCategory(marker, sourceElement);
+                        RecordMarkerProvenance(marker, sourceOwner, sourceElement,
+                            materialRule.MaterialName.Length > 0 ? materialRule.MaterialName : diagnosticMaterialName,
+                            compoundLayerIndex, compoundLayerFunction);
                         matchedRule = materialRule.RuleId;
                     }
                     else if (TypeRule(sourceOwner, sourceElement) is { } typeRule)

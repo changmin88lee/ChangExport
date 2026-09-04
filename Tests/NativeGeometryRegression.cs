@@ -70,7 +70,10 @@ internal static class NativeGeometryRegression
             {
                 new() { MarkerAci = 200, Layer = "TYPE-FILTER", Color = 3, RuleId = "type" },
                 new() { MarkerAci = 201, Layer = "MATERIAL-FILTER", Color = 4, RuleId = "material", RemapFills = true,
-                    BoundaryPriority = 700, SourceLayers = new() { "NATIVE-KEEP" } }
+                    BoundaryPriority = 700, SourceLayers = new() { "NATIVE-KEEP" },
+                    DiagnosticSourceCategories = new() { "벽" }, DiagnosticCompoundLayerIndices = new() { 2 },
+                    DiagnosticCompoundLayerFunctions = new() { "Finish1" }, DiagnosticMaterialNames = new() { "시멘트 모르타르" },
+                    DiagnosticSourceElementCount = 1, DiagnosticSourceElementIds = new() { "TEST|WALL-1" } }
             }
         }, nativePath, output);
         CadDocument saved = DwgReader.Read(resultPath);
@@ -78,6 +81,17 @@ internal static class NativeGeometryRegression
         check(response.GeometrySource == "NativeGeometry" && response.NativeOverlayMatchedEntities == 4
             && response.NativeOverlayPartialLinesSplit == 1,
             "NGE transfers exact, fully covered, partially covered and full-boundary hatch classifications");
+        var materialDiagnostic = response.NativeOverlayRuleDiagnostics.Single(diagnostic => diagnostic.MarkerAci == 201);
+        check(materialDiagnostic.ClassifiedEntities >= 5 && materialDiagnostic.FullLineAssignments == 1
+                && materialDiagnostic.PartialLineAssignments == 1 && materialDiagnostic.AppliedEntities == 3
+                && materialDiagnostic.UniqueMarkerLineSignatures == 4
+                && materialDiagnostic.ExactNativeLineSignatures == 0
+                && materialDiagnostic.RejectedNativeLayers.GetValueOrDefault("NATIVE-TOP") >= 1
+                && materialDiagnostic.AppliedNativeLayers.GetValueOrDefault("NATIVE-KEEP") == 3
+                && materialDiagnostic.CompoundLayerIndices.SequenceEqual(new[] { 2 })
+                && materialDiagnostic.SourceElementIds.SequenceEqual(new[] { "TEST|WALL-1" })
+                && materialDiagnostic.Samples.Count > 0,
+            "NGE diagnostics record compound provenance, source-layer rejection, partial matching and final native origins");
         check(entities.OfType<Line>().Count(line => line.Layer.Name == "TYPE-FILTER") == 1,
             "Exact type-filter geometry is relayered on the native entity");
         check(entities.Count(entity => entity.Layer.Name == "MATERIAL-FILTER") == 3

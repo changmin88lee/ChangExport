@@ -78,6 +78,14 @@ namespace ChangExport.DwgProcessing
         // Optional native category-layer gate. Material Part markers may only
         // classify native entities that came from the same Revit source category.
         public List<string> SourceLayers { get; set; } = new();
+        // Diagnostic-only provenance. These fields never participate in layer
+        // selection; they explain which Revit compound layers shared a marker.
+        public List<string> DiagnosticSourceCategories { get; set; } = new();
+        public List<int> DiagnosticCompoundLayerIndices { get; set; } = new();
+        public List<string> DiagnosticCompoundLayerFunctions { get; set; } = new();
+        public List<string> DiagnosticMaterialNames { get; set; } = new();
+        public int DiagnosticSourceElementCount { get; set; }
+        public List<string> DiagnosticSourceElementIds { get; set; } = new();
     }
 
     /// <summary>
@@ -144,6 +152,7 @@ namespace ChangExport.DwgProcessing
         public int NativeOverlayUnmatchedMarkers { get; set; }
         public int NativeOverlayAmbiguousMarkers { get; set; }
         public int NativeOverlayPartialLinesSplit { get; set; }
+        public List<NativeOverlayRuleDiagnostic> NativeOverlayRuleDiagnostics { get; set; } = new();
         public int ExcludedEntities { get; set; }
         public int WideLineConverted { get; set; }
         public int WideLineSkipped { get; set; }
@@ -157,6 +166,58 @@ namespace ChangExport.DwgProcessing
         public int FamilySignatureCacheHits { get; set; }
         public Dictionary<string, int> FamilyBlockFallbacks { get; set; } = new();
         public List<FamilyBlockMatch> FamilyBlockMatches { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Read-only trace of one temporary marker through the Native Geometry
+    /// overlay. It is serialized into the manifest and diagnostic text only.
+    /// </summary>
+    public sealed class NativeOverlayRuleDiagnostic
+    {
+        public int MarkerAci { get; set; }
+        public string RuleId { get; set; } = "";
+        public string TargetLayer { get; set; } = "";
+        public int BoundaryPriority { get; set; }
+        public bool RemapFills { get; set; }
+        public bool Wrapping { get; set; }
+        public int ExpectedRevitMatches { get; set; }
+        public List<string> SourceLayers { get; set; } = new();
+        public List<string> SourceCategories { get; set; } = new();
+        public List<int> CompoundLayerIndices { get; set; } = new();
+        public List<string> CompoundLayerFunctions { get; set; } = new();
+        public List<string> MaterialNames { get; set; } = new();
+        public int SourceElementCount { get; set; }
+        public List<string> SourceElementIds { get; set; } = new();
+        public int ClassifiedEntities { get; set; }
+        public int ClassifiedLines { get; set; }
+        public int UnsupportedMarkerEntities { get; set; }
+        public int UniqueMarkerSignatures { get; set; }
+        public int ExactNativeSignatures { get; set; }
+        public int MissingNativeSignatures { get; set; }
+        public int UniqueMarkerLineSignatures { get; set; }
+        public int ExactNativeLineSignatures { get; set; }
+        public int CollinearNativeCandidates { get; set; }
+        public int AcceptedSourceCandidates { get; set; }
+        public int RejectedSourceCandidates { get; set; }
+        public int FullLineAssignments { get; set; }
+        public int PartialLineAssignments { get; set; }
+        public int AppliedEntities { get; set; }
+        public Dictionary<string, int> MarkerEntityTypes { get; set; } = new();
+        public Dictionary<string, int> CandidateNativeLayers { get; set; } = new();
+        public Dictionary<string, int> RejectedNativeLayers { get; set; } = new();
+        public Dictionary<string, int> AppliedNativeLayers { get; set; } = new();
+        public Dictionary<string, int> RejectionReasons { get; set; } = new();
+        public List<NativeOverlayDiagnosticSample> Samples { get; set; } = new();
+        public int OmittedSamples { get; set; }
+    }
+
+    public sealed class NativeOverlayDiagnosticSample
+    {
+        public string Result { get; set; } = "";
+        public string MarkerGeometry { get; set; } = "";
+        public string NativeLayer { get; set; } = "";
+        public string NativeEntityType { get; set; } = "";
+        public string Detail { get; set; } = "";
     }
 
     public sealed class SheetPlacement

@@ -192,7 +192,7 @@ public sealed class RevitDwgExportService
                             conversion.FilterContainerMarkersIgnored, conversion.FilterLowerGraphicsSkipped, conversion.ExcludedEntities,
                             conversion.GeometrySource, conversion.NativeOverlayMatchedEntities,
                             conversion.NativeOverlayUnmatchedMarkers, conversion.NativeOverlayAmbiguousMarkers,
-                            conversion.NativeOverlayPartialLinesSplit,
+                            conversion.NativeOverlayPartialLinesSplit, conversion.NativeOverlayRuleDiagnostics,
                             conversion.WideLineConverted, conversion.WideLineSkipped, conversion.PreservedWideLineColors,
                             conversion.WideLineStyleCounts, conversion.FamilyBlockReferences, conversion.FamilyBlockDefinitions,
                             conversion.FamilySignaturesComputed, conversion.FamilySignaturesSkipped, conversion.FamilySignatureCacheHits,
