@@ -12,11 +12,15 @@ internal static class NativeGeometryRegression
         CadDocument native = DwgRegression.Sheet();
         var nativeType = new Layer("NATIVE-TYPE") { Color = new ACadSharp.Color(7) };
         var nativeKeep = new Layer("NATIVE-KEEP") { Color = new ACadSharp.Color(7) };
-        native.Layers.Add(nativeType); native.Layers.Add(nativeKeep);
+        var nativeTop = new Layer("NATIVE-TOP") { Color = new ACadSharp.Color(7) };
+        native.Layers.Add(nativeType); native.Layers.Add(nativeKeep); native.Layers.Add(nativeTop);
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 300, 0), EndPoint = new XYZ(450, 300, 0), Layer = nativeType });
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 305, 0), EndPoint = new XYZ(450, 305, 0), Layer = nativeKeep });
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 320, 0), EndPoint = new XYZ(450, 320, 0), Layer = nativeKeep });
         native.Entities.Add(new Line { StartPoint = new XYZ(300, 340, 0), EndPoint = new XYZ(450, 340, 0), Layer = nativeKeep });
+        // A different host object's coincident line is later in the native Revit
+        // order and must remain visually above the material line after splitting.
+        native.Entities.Add(new Line { StartPoint = new XYZ(300, 340, 0), EndPoint = new XYZ(450, 340, 0), Layer = nativeTop });
         var linkedTriangle = new Hatch { IsSolid = true, Color = new ACadSharp.Color(255, 0, 0), Layer = nativeKeep };
         linkedTriangle.Paths.Add(new Hatch.BoundaryPath(new Hatch.BoundaryPath.Edge[]
         {
@@ -86,6 +90,12 @@ internal static class NativeGeometryRegression
                 && Math.Abs(line.StartPoint.Y - 340) < 1e-8 && Math.Abs(line.StartPoint.X - 360) < 1e-8
                 && Math.Abs(line.EndPoint.X - 450) < 1e-8),
             "A partially covered native wall line is split only at the unambiguous Part boundary");
+        var coincidentOrder = saved.BlockRecords.Select(block => block.GetSortedEntities().OfType<Line>()
+                .Where(line => Math.Abs(line.StartPoint.Y - 340) < 1e-8).Select(line => line.Layer.Name).ToArray())
+            .FirstOrDefault(order => order.Length > 0) ?? Array.Empty<string>();
+        check(coincidentOrder.SequenceEqual(new[] { "MATERIAL-FILTER", "NATIVE-KEEP", "NATIVE-TOP" }),
+            "Partial material splitting preserves the native Revit draw order across different host objects: "
+                + string.Join(",", coincidentOrder));
         check(entities.OfType<Line>().Any(line => line.Layer.Name == "NATIVE-KEEP"),
             "Nearby native door/floor geometry is not captured by a non-exact material marker");
         check(entities.OfType<Hatch>().Count(hatch => hatch.Layer.Name == "MATERIAL-FILTER") == 1

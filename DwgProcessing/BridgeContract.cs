@@ -72,7 +72,8 @@ namespace ChangExport.DwgProcessing
         // Material filters move fill entities to the selected material layer while
         // retaining their explicit Revit display color and hatch definition.
         public bool RemapFills { get; set; }
-        // Shared compound-layer boundaries keep the highest Revit material function.
+        // Shared compound-layer boundaries keep the interior/bottom layer in
+        // Revit's exterior-to-interior or top-to-bottom compound order.
         public int BoundaryPriority { get; set; }
         // Optional native category-layer gate. Material Part markers may only
         // classify native entities that came from the same Revit source category.

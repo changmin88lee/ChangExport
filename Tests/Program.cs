@@ -120,8 +120,9 @@ internal static class Program
     private static void NativeGeometryReal(string output, string nativePath, string filteredPath, string manifestPath, int diagnosticIndex)
     {
         using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
-        JsonElement diagnostics = manifest.RootElement.GetProperty("items")[0].GetProperty("SheetDiagnostics");
-        JsonElement filter = diagnostics.EnumerateArray().Where(element => element.TryGetProperty("filterRemaps", out _)).ElementAt(diagnosticIndex);
+        JsonElement filter = manifest.RootElement.GetProperty("items").EnumerateArray()
+            .SelectMany(item => item.GetProperty("SheetDiagnostics").EnumerateArray())
+            .Where(element => element.TryGetProperty("filterRemaps", out _)).ElementAt(diagnosticIndex);
         var remaps = JsonSerializer.Deserialize<List<ColorLayerRemap>>(filter.GetProperty("filterRemaps").GetRawText()) ?? new();
         var matches = JsonSerializer.Deserialize<Dictionary<string, int>>(filter.GetProperty("filterMatches").GetRawText()) ?? new();
         string nativeOutput = Path.Combine(output, "native-only.dwg"), ngeOutput = Path.Combine(output, "native-overlay.dwg");

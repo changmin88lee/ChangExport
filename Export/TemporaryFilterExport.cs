@@ -117,6 +117,37 @@ internal static class TemporaryFilterExport
             return structure.GetLayers().Select(layer => layer.MaterialId)
                 .Where(id => id != ElementId.InvalidElementId).Distinct().ToList();
         }
+        int CompoundLayerIndex(Document owner, Element sourceElement, Part part, ElementId materialId, string materialName)
+        {
+            if (owner.GetElement(sourceElement.GetTypeId()) is not HostObjAttributes type
+                || type.GetCompoundStructure() is not { LayerCount: >= 2 } structure) return 0;
+            var layers = structure.GetLayers();
+            var candidates = Enumerable.Range(0, layers.Count).Where(index =>
+            {
+                ElementId candidateId = layers[index].MaterialId;
+                if (candidateId == materialId) return true;
+                return owner.GetElement(candidateId) is Material candidate
+                    && candidate.Name.Equals(materialName, StringComparison.OrdinalIgnoreCase);
+            }).ToList();
+            int reported = part.get_Parameter(BuiltInParameter.DPART_LAYER_INDEX)?.AsInteger() ?? -1;
+            if (candidates.Contains(reported)) return reported;
+            int function = part.get_Parameter(BuiltInParameter.DPART_LAYER_FUNCTION)?.AsInteger() ?? int.MinValue;
+            var byFunction = candidates.Where(index => (int)layers[index].Function == function).ToList();
+            if (byFunction.Count == 1) return byFunction[0];
+            if (byFunction.Count > 0) candidates = byFunction;
+            Parameter? widthParameter = part.get_Parameter(BuiltInParameter.DPART_LAYER_WIDTH);
+            if (widthParameter?.StorageType == StorageType.Double)
+            {
+                double width = widthParameter.AsDouble();
+                var byWidth = candidates.Where(index => Math.Abs(layers[index].Width - width) < 1e-8).ToList();
+                if (byWidth.Count == 1) return byWidth[0];
+                if (byWidth.Count > 0) candidates = byWidth;
+            }
+            // Repeated identical layers are visually equivalent for this rule. If
+            // Revit omits their Part index, choose the interior/bottom occurrence
+            // so a deterministic result still follows the requested ownership.
+            return candidates.Count > 0 ? candidates.Max() : Math.Max(0, reported);
+        }
         RevitLayerRow? TypeRule(Document owner, Element element)
         {
             if (element.Category == null || !ruleIndex.HasCategory(element.Category.Name)) return null;
@@ -375,14 +406,15 @@ internal static class TemporaryFilterExport
                         {
                             Parameter? materialParameter = part.get_Parameter(BuiltInParameter.DPART_MATERIAL_ID_PARAM);
                             ElementId materialId = materialParameter?.AsElementId() ?? ElementId.InvalidElementId;
+                            string materialName = (sourceOwner.GetElement(materialId) as Material)?.Name
+                                ?? (document.GetElement(materialId) as Material)?.Name
+                                ?? materialParameter?.AsValueString() ?? "";
                             if (!MaterialIndex(sourceOwner).TryGetValue(materialId, out materialRule))
                             {
-                                string materialName = (sourceOwner.GetElement(materialId) as Material)?.Name
-                                    ?? (document.GetElement(materialId) as Material)?.Name
-                                    ?? materialParameter?.AsValueString() ?? "";
                                 materialRulesByName.TryGetValue(materialName, out materialRule);
                             }
-                            int layerIndex = part.get_Parameter(BuiltInParameter.DPART_LAYER_INDEX)?.AsInteger() ?? 0;
+                            int layerIndex = CompoundLayerIndex(sourceOwner, sourceElement, part, materialId,
+                                materialRule?.MaterialName ?? materialName);
                             priority = CompoundLayerBoundaryPriority(layerIndex);
                         }
                     }

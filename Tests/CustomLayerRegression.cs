@@ -78,11 +78,13 @@ internal static class CustomLayerRegression
             Layer = native, Color = new ACadSharp.Color(202) };
         var structureBoundary = new Line { StartPoint = finishBoundary.StartPoint, EndPoint = finishBoundary.EndPoint,
             Layer = native, Color = new ACadSharp.Color(203) };
+        var floorBoundary = new Line { StartPoint = finishBoundary.StartPoint, EndPoint = finishBoundary.EndPoint,
+            Layer = native, Color = new ACadSharp.Color(206) };
         var wrappedEnd = new Line { StartPoint = new XYZ(100, 50, 0), EndPoint = new XYZ(115, 50, 0),
             Layer = native, Color = new ACadSharp.Color(204) };
         var airOverWrappedEnd = new Line { StartPoint = new XYZ(105, 50, 0), EndPoint = new XYZ(110, 50, 0),
             Layer = native, Color = new ACadSharp.Color(205) };
-        materials.Entities.Add(finishBoundary); materials.Entities.Add(structureBoundary);
+        materials.Entities.Add(finishBoundary); materials.Entities.Add(structureBoundary); materials.Entities.Add(floorBoundary);
         materials.Entities.Add(wrappedEnd); materials.Entities.Add(airOverWrappedEnd);
         materials.Entities.Add(new Line { StartPoint = new XYZ(120, 0, 0), EndPoint = new XYZ(120, 50, 0),
             Layer = native, LineType = beyond, Color = new ACadSharp.Color(202) });
@@ -105,10 +107,16 @@ internal static class CustomLayerRegression
         var materialResponse = new ManagedDwgProcessor().Run(new BridgeRequest { Operation = "Flatten", OutputPath = materialOutput,
             ColorRemaps = new()
             {
-                new() { MarkerAci = 202, Layer = "A-FINISH", Color = 30, RuleId = "finish", RemapFills = true, BoundaryPriority = 1 },
-                new() { MarkerAci = 203, Layer = "A-STRUCTURE", Color = 8, RuleId = "structure", RemapFills = true, BoundaryPriority = 2 },
-                new() { MarkerAci = 204, Layer = "A-FINISH", Color = 30, RuleId = "wrap:finish", BoundaryPriority = 1 },
-                new() { MarkerAci = 205, Layer = "A-AIR", Color = 254, RuleId = "air", RemapFills = true, BoundaryPriority = 100 }
+                new() { MarkerAci = 202, Layer = "A-FINISH", Color = 30, RuleId = "finish", RemapFills = true,
+                    BoundaryPriority = 1, SourceLayers = new() { "벽" } },
+                new() { MarkerAci = 203, Layer = "A-STRUCTURE", Color = 8, RuleId = "structure", RemapFills = true,
+                    BoundaryPriority = 2, SourceLayers = new() { "벽" } },
+                new() { MarkerAci = 204, Layer = "A-FINISH", Color = 30, RuleId = "wrap:finish",
+                    BoundaryPriority = 1, SourceLayers = new() { "벽" } },
+                new() { MarkerAci = 205, Layer = "A-AIR", Color = 254, RuleId = "air", RemapFills = true,
+                    BoundaryPriority = 100, SourceLayers = new() { "벽" } },
+                new() { MarkerAci = 206, Layer = "A-FLOOR", Color = 4, RuleId = "floor", RemapFills = true,
+                    BoundaryPriority = 1, SourceLayers = new() { "바닥" } }
             } }, materialInput, output);
         var materialSaved = DwgReader.Read(materialOutput);
         var materialEntities = materialSaved.BlockRecords.SelectMany(record => record.Entities).ToArray();
@@ -123,6 +131,9 @@ internal static class CustomLayerRegression
                 && line.Layer.Name == "A-FINISH")
             && materialResponse.MaterialBoundaryDuplicatesRemoved == 2,
             "Shared compound boundary is owned once by the interior-side layer");
+        check(materialEntities.OfType<Line>().Count(line => line.StartPoint.X == 100 && line.EndPoint.X == 100
+                && line.Layer.Name == "A-FLOOR") == 1,
+            "Coincident material boundaries from disjoint wall and floor source scopes remain independent");
         check(materialEntities.OfType<Line>().Count(line => line.StartPoint.Y == 50 && line.EndPoint.Y == 50
                 && line.Layer.Name == "A-FINISH") == 1
             && !materialEntities.OfType<Line>().Any(line => line.StartPoint.Y == 50 && line.EndPoint.Y == 50

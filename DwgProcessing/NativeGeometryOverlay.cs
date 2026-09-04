@@ -227,6 +227,7 @@ public sealed partial class ManagedDwgProcessor
         }
 
         int sharedAmbiguous = 0, partialLinesSplit = 0;
+        var lineReplacements = new Dictionary<Line, List<Line>>(ReferenceEqualityComparer.Instance);
         foreach (var pair in lineOccurrences)
         {
             List<List<OverlayPiece>> occurrences = pair.Value;
@@ -243,22 +244,42 @@ public sealed partial class ManagedDwgProcessor
                 assignments[pair.Key] = new() { whole };
                 continue;
             }
-            if (!lineOwners.TryGetValue(pair.Key, out BlockRecord? owner) || !owner.Entities.Remove(pair.Key))
+            if (!lineOwners.ContainsKey(pair.Key))
             {
                 sharedAmbiguous += occurrences.Count;
                 continue;
             }
             XYZ originalStart = pair.Key.StartPoint, originalEnd = pair.Key.EndPoint;
+            var replacements = new List<Line>();
             foreach (OverlayPiece piece in pieces)
             {
                 if (piece.End - piece.Start <= 1e-9) continue;
                 var clone = (Line)pair.Key.Clone();
                 clone.StartPoint = originalStart + (originalEnd - originalStart) * piece.Start;
                 clone.EndPoint = originalStart + (originalEnd - originalStart) * piece.End;
-                owner.Entities.Add(clone);
+                replacements.Add(clone);
                 if (piece.Target != null) assignments[clone] = new() { piece.Target };
             }
+            lineReplacements[pair.Key] = replacements;
             partialLinesSplit++;
+        }
+        foreach (var ownerGroup in lineReplacements.GroupBy(pair => lineOwners[pair.Key]))
+        {
+            BlockRecord owner = ownerGroup.Key;
+            Entity[] ordered = owner.GetSortedEntities().ToArray();
+            var replacements = new Dictionary<Line, List<Line>>(ReferenceEqualityComparer.Instance);
+            foreach (var pair in ownerGroup) replacements[pair.Key] = pair.Value;
+            owner.Entities.Clear();
+            var rebuilt = new List<Entity>();
+            foreach (Entity entity in ordered)
+            {
+                if (entity is Line original && replacements.TryGetValue(original, out List<Line>? pieces))
+                {
+                    foreach (Line piece in pieces) { owner.Entities.Add(piece); rebuilt.Add(piece); }
+                }
+                else { owner.Entities.Add(entity); rebuilt.Add(entity); }
+            }
+            PreserveMaskDrawOrder(owner, rebuilt);
         }
 
         var counts = request.ColorRemaps.Select(map => map.RuleId)

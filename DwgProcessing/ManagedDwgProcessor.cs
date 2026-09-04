@@ -515,7 +515,10 @@ public sealed partial class ManagedDwgProcessor
 
     private static void PreserveMaskDrawOrder(BlockRecord block, IReadOnlyList<Entity> ordered)
     {
-        if (!ordered.Any(entity => entity is Wipeout)) return;
+        // ACadSharp stores entities in a HashSet, so collection order is not a
+        // stable substitute for Revit/DWG draw order. Coincident wall, floor and
+        // other host-object boundaries need the explicit order just as masks do.
+        if (ordered.Count == 0) return;
         var order = block.CreateSortEntitiesTable();
         order.Clear();
         for (int index = 0; index < ordered.Count; index++) order.Add(ordered[index], (ulong)index + 1);

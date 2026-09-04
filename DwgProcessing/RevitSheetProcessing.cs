@@ -284,11 +284,14 @@ public sealed partial class ManagedDwgProcessor
         int blockIndex = 0;
         var mappings = request.ColorRemaps.ToDictionary(m => m.MarkerAci);
         var counts = mappings.Keys.ToDictionary(k => k, _ => 0);
-        var materialBoundaries = new Dictionary<Entity, (int Priority, bool Wrapping)>();
+        var materialBoundaries = new Dictionary<Entity, (int Priority, bool Wrapping, string SourceScope)>();
         var appearanceCounts = request.MaterialAppearanceRemaps.ToDictionary(map => map, _ => 0);
         var byRgb = request.ColorRemaps.ToDictionary(m => ColorRgb(new ACadSharp.Color((short)m.MarkerAci)));
         ColorLayerRemap? Marker(ACadSharp.Color color) => !color.IsByBlock && !color.IsByLayer
             && byRgb.TryGetValue(ColorRgb(color), out var map) ? map : null;
+        static string SourceScope(IEnumerable<string> layers) => string.Join("\u001f", layers
+            .Where(layer => !string.IsNullOrWhiteSpace(layer)).Select(RevitDwgLayerNames.Normalize)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(layer => layer, StringComparer.OrdinalIgnoreCase));
         string Replace(string value)
         {
             foreach (var entry in request.TextReplacements) value = value.Replace(entry.Key, entry.Value, StringComparison.Ordinal);
@@ -420,11 +423,11 @@ public sealed partial class ManagedDwgProcessor
                 if (signature == null || !boundaryMaps.TryGetValue(signature, out var map)) continue;
                 if (!rewritten.Layers.TryGetValue(map.Layer, out Layer layer)) continue;
                 entity.Layer = layer; entity.Color = ACadSharp.Color.ByLayer;
-                materialBoundaries[entity] = (map.BoundaryPriority, false);
+                materialBoundaries[entity] = (map.BoundaryPriority, false, "");
                 response.LinkedMaterialBoundariesRemapped++;
             }
         }
-        static int BoundaryRank((int Priority, bool Wrapping) owner)
+        static int BoundaryRank((int Priority, bool Wrapping, string SourceScope) owner)
             => owner.Wrapping ? int.MaxValue : owner.Priority;
         static string CollinearKey(Line line)
         {
@@ -445,7 +448,7 @@ public sealed partial class ManagedDwgProcessor
         void ReconcileOverlappingMaterialLines(BlockRecord block)
         {
             const double tolerance = 1e-7;
-            var candidates = block.Entities.OfType<Line>().Where(materialBoundaries.ContainsKey)
+            var candidates = block.GetSortedEntities().OfType<Line>().Where(materialBoundaries.ContainsKey)
                 .Select((line, order) =>
                 {
                     double dx = line.EndPoint.X - line.StartPoint.X, dy = line.EndPoint.Y - line.StartPoint.Y;
@@ -455,7 +458,9 @@ public sealed partial class ManagedDwgProcessor
                     if (x < -Epsilon || (Math.Abs(x) < Epsilon && y < 0)) { x = -x; y = -y; }
                     double start = x * line.StartPoint.X + y * line.StartPoint.Y;
                     double end = x * line.EndPoint.X + y * line.EndPoint.Y;
-                    return (Line: line, Order: order, Key: CollinearKey(line), X: x, Y: y,
+                    string key = CollinearKey(line);
+                    if (key.Length > 0) key += "\u001e" + materialBoundaries[line].SourceScope;
+                    return (Line: line, Order: order, Key: key, X: x, Y: y,
                         Start: Math.Min(start, end), End: Math.Max(start, end));
                 }).Where(item => item.Key.Length > 0).ToList();
             foreach (var group in candidates.GroupBy(item => item.Key, StringComparer.Ordinal))
@@ -466,7 +471,7 @@ public sealed partial class ManagedDwgProcessor
                 var distinct = new List<double>();
                 foreach (double point in points)
                     if (distinct.Count == 0 || Math.Abs(point - distinct[^1]) > tolerance) distinct.Add(point);
-                var pieces = new List<(double Start, double End, Line Source, (int Priority, bool Wrapping) Owner)>();
+                var pieces = new List<(double Start, double End, Line Source, (int Priority, bool Wrapping, string SourceScope) Owner)>();
                 int redundant = 0;
                 for (int pointIndex = 1; pointIndex < distinct.Count; pointIndex++)
                 {
@@ -481,7 +486,7 @@ public sealed partial class ManagedDwgProcessor
                     redundant += covering.Count - 1;
                 }
                 if (redundant == 0) continue;
-                var merged = new List<(double Start, double End, Line Source, (int Priority, bool Wrapping) Owner)>();
+                var merged = new List<(double Start, double End, Line Source, (int Priority, bool Wrapping, string SourceScope) Owner)>();
                 foreach (var piece in pieces)
                 {
                     if (merged.Count > 0 && Math.Abs(merged[^1].End - piece.Start) <= tolerance
@@ -493,31 +498,48 @@ public sealed partial class ManagedDwgProcessor
                     }
                     else merged.Add(piece);
                 }
-                foreach (var entry in entries)
-                {
-                    block.Entities.Remove(entry.Line);
-                    materialBoundaries.Remove(entry.Line);
-                }
                 double axisX = entries[0].X, axisY = entries[0].Y;
+                var replacements = new Dictionary<Line, List<(Line Line, (int Priority, bool Wrapping, string SourceScope) Owner)>>(ReferenceEqualityComparer.Instance);
                 foreach (var piece in merged)
                 {
                     var line = (Line)piece.Source.Clone();
                     double sourcePosition = axisX * piece.Source.StartPoint.X + axisY * piece.Source.StartPoint.Y;
                     line.StartPoint = piece.Source.StartPoint + new XYZ(axisX, axisY, 0) * (piece.Start - sourcePosition);
                     line.EndPoint = piece.Source.StartPoint + new XYZ(axisX, axisY, 0) * (piece.End - sourcePosition);
-                    block.Entities.Add(line);
-                    materialBoundaries[line] = piece.Owner;
+                    if (!replacements.TryGetValue(piece.Source, out var replacement))
+                        replacements[piece.Source] = replacement = new();
+                    replacement.Add((line, piece.Owner));
                 }
+                Entity[] originalOrder = block.GetSortedEntities().ToArray();
+                var removed = new HashSet<Line>(entries.Select(entry => entry.Line), ReferenceEqualityComparer.Instance);
+                foreach (Line line in removed) materialBoundaries.Remove(line);
+                block.Entities.Clear();
+                var rebuilt = new List<Entity>();
+                foreach (Entity entity in originalOrder)
+                {
+                    if (entity is Line original && removed.Contains(original))
+                    {
+                        if (!replacements.TryGetValue(original, out var replacement)) continue;
+                        foreach (var item in replacement)
+                        {
+                            block.Entities.Add(item.Line); rebuilt.Add(item.Line);
+                            materialBoundaries[item.Line] = item.Owner;
+                        }
+                    }
+                    else { block.Entities.Add(entity); rebuilt.Add(entity); }
+                }
+                PreserveMaskDrawOrder(block, rebuilt);
                 response.MaterialBoundaryDuplicatesRemoved += redundant;
             }
         }
         void RemoveDuplicateMaterialBoundaries(BlockRecord block)
         {
             ReconcileOverlappingMaterialLines(block);
+            Entity[] originalOrder = block.GetSortedEntities().ToArray();
             var groups = block.Entities.Where(entity => entity is not Line && materialBoundaries.ContainsKey(entity))
                 .Select(entity => (Entity: entity, Signature: BoundarySignature(entity)))
                 .Where(item => item.Signature != null)
-                .GroupBy(item => item.Signature!, StringComparer.Ordinal);
+                .GroupBy(item => item.Signature! + "\u001e" + materialBoundaries[item.Entity].SourceScope, StringComparer.Ordinal);
             foreach (var group in groups)
             {
                 var ordered = group.OrderByDescending(item => BoundaryRank(materialBoundaries[item.Entity])).ToList();
@@ -527,6 +549,7 @@ public sealed partial class ManagedDwgProcessor
                     response.MaterialBoundaryDuplicatesRemoved++;
                 }
             }
+            PreserveMaskDrawOrder(block, originalOrder.Where(block.Entities.Contains).ToArray());
         }
         void Visit(Entity e, ColorLayerRemap? inherited, HashSet<BlockRecord> visited)
         {
@@ -545,7 +568,8 @@ public sealed partial class ManagedDwgProcessor
                 e.Layer = layer;
                 if (!isFill) e.Color = ACadSharp.Color.ByLayer;
                 if (map.BoundaryPriority > 0 && !isFill)
-                    materialBoundaries[e] = (map.BoundaryPriority, map.RuleId.StartsWith("wrap:", StringComparison.Ordinal));
+                    materialBoundaries[e] = (map.BoundaryPriority, map.RuleId.StartsWith("wrap:", StringComparison.Ordinal),
+                        SourceScope(map.SourceLayers));
                 counts[map.MarkerAci]++;
             }
             if (e is MText m) m.Value = Replace(m.Value);
