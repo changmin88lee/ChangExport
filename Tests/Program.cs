@@ -219,6 +219,28 @@ internal static class Program
         Check(File.ReadAllText(existing) == "existing" && published.EndsWith("_v2.dwg") && File.ReadAllText(published) == "new", "No-overwrite publication");
 
         Application.SetHighDpiMode(HighDpiMode.SystemAware); Application.EnableVisualStyles();
+        using (var help = new ChangExportHelpForm())
+        {
+            Render(help, Path.Combine(output, "help-form-preview.png"));
+            TabControl helpTabs = Descendants(help).OfType<TabControl>().Single();
+            Check(helpTabs.TabPages.Count == 6, "Help form has six feature tabs");
+            Check(helpTabs.TabPages.Cast<TabPage>().Select(page => page.Text).SequenceEqual(
+                new[] { "시작하기", "DWG 레이어 설정", "시트 세트 구성", "DWG 출력", "설정", "기술 진단" }),
+                "Help tabs follow the ChangExport workflow");
+            Check(helpTabs.TabPages.Cast<TabPage>().All(page => Descendants(page).OfType<RichTextBox>().Count() == 3),
+                "Every help topic separates overview, steps and detailed behavior");
+        }
+        Assembly addinAssembly = typeof(ManagedDwgProcessor).Assembly;
+        using Stream ribbonResource = addinAssembly.GetManifestResourceStream("ChangExport.g.resources")!;
+        using var ribbonReader = new System.Resources.ResourceReader(ribbonResource);
+        HashSet<string> ribbonAssets = ribbonReader.Cast<System.Collections.DictionaryEntry>()
+            .Select(entry => entry.Key?.ToString() ?? string.Empty).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (string iconName in new[] { "layers", "sheet-sets", "dwg-export", "help", "settings", "diagnostics" })
+        {
+            Check(ribbonAssets.Contains($"assets/{iconName}-16.png")
+                && ribbonAssets.Contains($"assets/{iconName}-32.png"),
+                $"Embedded ribbon icon loads at both sizes: {iconName}");
+        }
         SpacingRegression.Run(output, Check, Render);
         OutputSetupRegression.Run(output, Check);
         LayerSearchRegression.Run(output, Check, Render);

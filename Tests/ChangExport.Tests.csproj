@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><PlatformTarget>x64</PlatformTarget>
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\ChangExport.csproj" /></ItemGroup>
   <ItemGroup><PackageReference Include="ACadSharp" Version="3.7.1" ExcludeAssets="runtime" /></ItemGroup>

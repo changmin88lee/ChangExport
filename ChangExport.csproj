@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <PlatformTarget>x64</PlatformTarget>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
     <AssemblyName>ChangExport</AssemblyName>
@@ -14,12 +15,14 @@
     <Product>창Export</Product>
     <Description>한국형 Revit DWG Export 도구</Description>
     <Company>LAON ArcTec</Company>
-    <Version>0.15.7</Version>
-    <FileVersion>0.15.7.0</FileVersion>
+    <Version>0.15.8</Version>
+    <FileVersion>0.15.8.0</FileVersion>
     <RevitInstallDir Condition="'$(RevitInstallDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitInstallDir>
   </PropertyGroup>
 
   <ItemGroup>
+    <Using Include="System.IO" />
+    <Resource Include="Assets\*.png" />
     <PackageReference Include="ACadSharp" Version="3.7.1" GeneratePathProperty="true" PrivateAssets="all" ExcludeAssets="runtime" />
     <EmbeddedResource Include="$(PkgACadSharp)\lib\net8.0\ACadSharp.dll" LogicalName="ChangExport.Dependencies.ACadSharp.dll" />
     <EmbeddedResource Include="ThirdParty\*.txt" />
